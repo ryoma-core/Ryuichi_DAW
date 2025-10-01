@@ -8,15 +8,34 @@ mod sound_play;
 pub use sound_play::*;
 mod logging;
 pub use logging::rlog_send;
-use logging::*;
+pub use logging::*;
 
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::sync::Condvar;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-static CTR_CB: AtomicUsize = AtomicUsize::new(0);
-static CTR_COPY: AtomicUsize = AtomicUsize::new(0);
+pub static CTR_CB: AtomicUsize = AtomicUsize::new(0);
+pub static CTR_COPY: AtomicUsize = AtomicUsize::new(0);
+
+fn bump_priority_copy_thread() {
+    unsafe {
+        let h = GetCurrentThread();
+        let _ = SetThreadPriority(h, THREAD_PRIORITY_TIME_CRITICAL);
+    }
+}
+
+fn bump_priority_worker_thread() {
+    unsafe {
+        let h = GetCurrentThread();
+        let _ = SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
+    }
+}
+
+fn pin_to_core(core_id: usize) {
+    if let Some(core) = core_affinity::get_core_ids().and_then(|v| v.get(core_id).cloned()) {
+        let _ = core_affinity::set_for_current(core);
+    }
+}
 
 enum TrackNumber {
     Zero,
@@ -70,6 +89,7 @@ pub struct Parameters {
     pan: Vec<AtomicU32>,
     muted: Vec<AtomicBool>,
     bpm: AtomicU32,
+    pitch_semitones: AtomicU32,
 }
 impl Parameters {
     fn from_tracks(track: &Vec<TrackConfig>) -> Self {
@@ -83,11 +103,13 @@ impl Parameters {
             .collect();
         let muted = track.iter().map(|t| AtomicBool::new(t.muted)).collect();
         let bpm = AtomicU32::new((60.0f32).to_bits());
+        let pitch_semitones = AtomicU32::new((0.0f32).to_bits());
         Self {
             volume,
             pan,
             muted,
             bpm,
+            pitch_semitones,
         }
     }
 }
@@ -158,15 +180,6 @@ impl Transport {
     }
 }
 
-pub struct RateState {
-    frac: f32,
-    prev_l: f32,
-    prev_r: f32,
-    next_l: f32,
-    next_r: f32,
-    primed: bool,
-    step: f32,
-}
 struct Budget {
     frames: AtomicUsize,
 }
@@ -234,6 +247,10 @@ pub struct Engine {
     consumers: Arc<Vec<Mutex<Consumer<f32>>>>,
     playout_producers: Vec<Option<Producer<[f32; 2]>>>,
     playout_consumers: Vec<Option<Consumer<[f32; 2]>>>,
+    playout_producers_bank: [Vec<Option<Producer<[f32; 2]>>>; 2],
+    playout_consumers_bank: [Vec<Option<Consumer<[f32; 2]>>>; 2],
+    active_idx: Arc<AtomicUsize>,
+    rb2_level_sb: Arc<Vec<AtomicUsize>>,
 
     thread_worker: Vec<JoinHandle<()>>,
     copythread_worker: Option<JoinHandle<()>>, // ★ 복제 스레드 핸들 저장
@@ -253,6 +270,16 @@ pub struct Engine {
     track: Vec<TrackConfig>,
     budget: Arc<Budget>,
     seek_lock: Arc<Mutex<()>>,
+    rb2_level: Arc<Vec<AtomicUsize>>,
+    underrun_streak_callbacks: usize,
+    last_auto_rebuffer_at: Instant,
+    pending_bpm: AtomicU32,
+    has_pending_bpm: AtomicBool,
+    last_bank_swap_at: Instant,
+    swap_qualify_streak: usize,
+    precharge_req: Arc<AtomicBool>,
+    last_swap_epoch: Arc<AtomicU64>, // 스왑 카운터
+    swap_epoch_at_call: u64,         // (렌더 스냅샷)
 }
 impl Engine {
     fn new(mut tk: Vec<TrackConfig>) -> Self {
@@ -283,6 +310,21 @@ impl Engine {
             playout_producers.push(Some(tx));
             playout_consumers.push(Some(rx));
         }
+        let ntracks = tk.len();
+        let mut bank_prod0 = Vec::with_capacity(ntracks);
+        let mut bank_cons0 = Vec::with_capacity(ntracks);
+        let mut bank_prod1 = Vec::with_capacity(ntracks);
+        let mut bank_cons1 = Vec::with_capacity(ntracks);
+        for _ in 0..ntracks {
+            let (tx0, rx0) = RingBuffer::<[f32; 2]>::new(RB2_FRAMES);
+            let (tx1, rx1) = RingBuffer::<[f32; 2]>::new(RB2_FRAMES);
+            bank_prod0.push(Some(tx0));
+            bank_cons0.push(Some(rx0));
+            bank_prod1.push(Some(tx1));
+            bank_cons1.push(Some(rx1));
+        }
+        let playout_producers_bank = [bank_prod0, bank_prod1];
+        let playout_consumers_bank = [bank_cons0, bank_cons1];
 
         // 3) 생성
         let params = Arc::new(Parameters::from_tracks(&tk));
@@ -305,10 +347,17 @@ impl Engine {
         let flush_flag = Arc::new(AtomicBool::new(false));
         let seek_epoch = Arc::new(AtomicU64::new(0));
         let budget = Arc::new(Budget::new());
+        let rb2_level = Arc::new(
+            (0..tk.len())
+                .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>(),
+        );
+        let rb2_level_sb = Arc::new((0..ntracks).map(|_| AtomicUsize::new(0)).collect());
+        let precharge_req = Arc::new(AtomicBool::new(false));
         let seek_lock = Arc::new(Mutex::new(()));
 
         // 4) 디코딩 스레드 포인터 클론
-        let decoding_workers: usize = 4;
+        let decoding_workers: usize = 6;
         let mut worker = Vec::with_capacity(decoding_workers + 1);
         for worker_id in 0..decoding_workers {
             let rt_c = Arc::clone(&rt);
@@ -318,134 +367,148 @@ impl Engine {
             let dec_c = Arc::clone(&decs);
             let playing_c = Arc::clone(&playing);
             let budget_c = Arc::clone(&budget);
+            let params_c = Arc::clone(&params);
             worker.push(thread::spawn(move || {
+                bump_priority_worker_thread();
+                pin_to_core(
+                    1 + (worker_id
+                        % (core_affinity::get_core_ids().map(|v| v.len()).unwrap_or(1)).max(1)),
+                );
+                let mut rr = 0usize;
+
                 loop {
                     if stop_c.load(Ordering::Acquire) {
                         break;
                     }
 
-                    //트랙 선택
                     let ntracks = rt_c.len();
                     if ntracks == 0 {
                         std::thread::yield_now();
                         continue;
                     }
-                    let track_idx = worker_id % ntracks;
 
-                    //전역 예산 HIGH 넘으면 sleep
-                    {
-                        if budget_c.frames() > HIGH_FRAMES {
-                            let (mx, cv) = &*wait_c;
-                            let g = mx.lock().unwrap();
-                            let _ = cv.wait_timeout(g, Duration::from_micros(200));
+                    // 라운드로빈 시작점만 한 칸씩 밀기
+                    let start = rr;
+                    rr = rr.wrapping_add(1);
+
+                    // ★ 이번 사이클에 모든 트랙을 한 번씩 훑는다
+                    for off in 0..ntracks {
+                        if stop_c.load(Ordering::Acquire) {
+                            break;
                         }
-                    }
+                        let track_idx = (start + off) % ntracks;
 
-                    if stop_c.load(Ordering::Acquire) {
-                        break;
-                    }
-
-                    // 대기 플래그
-                    {
-                        let (lock, cvar) = &*wait_c;
-                        let mut guard = lock.lock().unwrap();
-                        guard = cvar.wait_while(guard, |waiting| *waiting).unwrap();
-                        if stop_c.load(Ordering::Relaxed) {
-                            return;
-                        }
-                    }
-
-                    // 로컬 포화(1차 Producer 꽉 차면 sleep)
-                    {
-                        let (mx, cv) = &*wait_c;
-                        let mut g = mx.lock().unwrap();
-                        while {
-                            if let Ok(p) = prod_c[track_idx].lock() {
-                                p.is_full()
-                            } else {
-                                true
+                        // 1차 Prod 꽉 차면 스킵 (짧은 try)
+                        if let Ok(p) = prod_c[track_idx].lock() {
+                            if p.is_full() {
+                                continue;
                             }
-                        } && !stop_c.load(Ordering::Acquire)
-                        {
-                            let to = Duration::from_millis(1);
-                            g = cv.wait_timeout(g, to).unwrap().0;
                         }
-                    }
-                    if stop_c.load(Ordering::Acquire) {
-                        break;
-                    }
-                    let engine_sr = playing_c.sr();
-                    let mut produced_total = 0usize;
-                    let mut per_iter = CHUNK_DECODE; // 8192 등
-                    let mut max_iters = 4; // 8192*4 = 32768 frames
-                    let b = budget_c.frames();
-                    if b > HIGH_FRAMES {
-                        // 0..1 스케일
-                        let span = (HIGH_FRAMES.saturating_sub(LOW_FRAMES)).max(1) as f32;
-                        let over = (b.saturating_sub(HIGH_FRAMES)) as f32;
-                        let scale = (over / span).min(1.0);
 
-                        // per_iter: 40~100% 범위에서만 줄임 (최저 2048)
-                        per_iter = ((CHUNK_DECODE as f32) * (1.0 - 0.60 * scale)) as usize;
-                        per_iter = per_iter.clamp(2048, CHUNK_DECODE);
+                        // 전역 일시정지 게이트 (seek 등)
+                        {
+                            let (lock, cvar) = &*wait_c;
+                            let mut guard = lock.lock().unwrap();
+                            guard = cvar.wait_while(guard, |waiting| *waiting).unwrap();
+                            if stop_c.load(Ordering::Relaxed) {
+                                return;
+                            }
+                        }
 
-                        // 이터레이션도 2~4로만 움직이게
-                        max_iters = if scale > 0.85 {
-                            2
-                        } else if scale > 0.5 {
-                            3
-                        } else {
-                            4
-                        };
-                    }
-                    for _ in 0..max_iters {
+                        // 로컬 포화면 짧게 대기
+                        {
+                            let (mx, cv) = &*wait_c;
+                            let mut g = mx.lock().unwrap();
+                            while {
+                                if let Ok(p) = prod_c[track_idx].lock() {
+                                    p.is_full()
+                                } else {
+                                    true
+                                }
+                            } && !stop_c.load(Ordering::Acquire)
+                            {
+                                g = cv
+                                    .wait_timeout(g, std::time::Duration::from_millis(1))
+                                    .unwrap()
+                                    .0;
+                            }
+                        }
                         if stop_c.load(Ordering::Acquire) {
                             break;
                         }
 
-                        // RB1 꽉 차면 그만
-                        let full = if let Ok(p) = prod_c[track_idx].lock() {
-                            p.is_full()
-                        } else {
-                            true
-                        };
-                        if full {
-                            break;
-                        }
+                        let engine_sr = playing_c.sr();
 
-                        // ★ tr/dec/prod 락은 짧게!
-                        let n = {
-                            let mut tr = match rt_c[track_idx].lock() {
-                                Ok(g) => g,
-                                Err(_) => continue,
-                            };
-                            let mut dec = match dec_c[track_idx].lock() {
-                                Ok(g) => g,
-                                Err(_) => continue,
-                            };
-                            let mut prod = match prod_c[track_idx].lock() {
-                                Ok(g) => g,
-                                Err(_) => continue,
-                            };
-                            match fill_track_once(
-                                &mut *tr, &mut *dec, &mut *prod, per_iter, engine_sr,
-                            ) {
-                                Ok(n) => n,
-                                Err(e) => {
-                                    eprintln!("[worker {worker_id}] fill_track_once error: {e}");
-                                    0
-                                }
+                        let mut per_iter = CHUNK_DECODE;
+                        let mut produced_total = 0usize;
+                        loop {
+                            if stop_c.load(Ordering::Acquire) {
+                                break;
                             }
-                        }; // ← 여기서 락 가드 자동 해제
 
-                        if n == 0 {
-                            break;
+                            // RB1 꽉 찼으면 다음 트랙
+                            let full = if let Ok(p) = prod_c[track_idx].lock() {
+                                p.is_full()
+                            } else {
+                                true
+                            };
+                            if full {
+                                break;
+                            }
+
+                            // tr/dec/prod 잠깐만 잡고 최대 per_iter 만큼 생산
+                            let n = {
+                                let mut tr = match rt_c[track_idx].lock() {
+                                    Ok(g) => g,
+                                    Err(_) => continue,
+                                };
+                                let mut dc = match dec_c[track_idx].lock() {
+                                    Ok(g) => g,
+                                    Err(_) => continue,
+                                };
+                                let mut pd = match prod_c[track_idx].lock() {
+                                    Ok(g) => g,
+                                    Err(_) => continue,
+                                };
+                                let tempo_ratio = {
+                                    let bpm_bits = params_c.bpm.load(Ordering::Relaxed);
+                                    let bpm = f32::from_bits(bpm_bits);
+                                    (bpm / BASE_BPM).clamp(0.25, 4.0)
+                                };
+                                let tpos = playing_c.pos_frames();
+                                match fill_track_once(
+                                    &mut *tr,
+                                    &mut *dc,
+                                    &mut *pd,
+                                    per_iter,
+                                    engine_sr,
+                                    tempo_ratio,
+                                    tpos,
+                                ) {
+                                    Ok(n) => n,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[worker {worker_id}] fill_track_once error: {e}"
+                                        );
+                                        0
+                                    }
+                                }
+                            };
+                            if n == 0 {
+                                // 더 만들 게 없으면 양보하고 탈출
+                                std::thread::yield_now();
+                                break;
+                            }
+
+                            produced_total += n;
+                            budget_c.add(n); // 예산은 기록만(스로틀에 사용 안 함)
                         }
-                        produced_total += n;
-                        budget_c.add(n);
-                    }
-                    if produced_total == 0 {
-                        std::thread::park_timeout(Duration::from_micros(200));
+
+                        // 트랙 단위로 아무 것도 못했으면 아주 짧게 쉼
+                        if produced_total == 0 {
+                            budget_c.decay(CHUNK_COPY / 2);
+                            std::thread::park_timeout(std::time::Duration::from_micros(200));
+                        }
                     }
                 }
             }));
@@ -457,11 +520,15 @@ impl Engine {
             consumers,
             playout_producers,
             playout_consumers,
+            playout_producers_bank,
+            playout_consumers_bank,
+            active_idx: Arc::new(AtomicUsize::new(0)),
+            rb2_level_sb,
 
             thread_worker: worker,
-            copythread_worker: None, // ★ 여기!
+            copythread_worker: None,
             thread_stop: stop,
-            copythread_stop: repl_stop, // ★ 이름 일관
+            copythread_stop: repl_stop,
             thread_wait: wait,
             flush_flag: flush_flag,
 
@@ -474,50 +541,64 @@ impl Engine {
             sound_output: None,
             budget: budget,
             seek_lock: seek_lock,
+            rb2_level: rb2_level.clone(),
+            underrun_streak_callbacks: 0,
+            last_auto_rebuffer_at: Instant::now(),
+            pending_bpm: AtomicU32::new(f32::to_bits(60.0)),
+            has_pending_bpm: AtomicBool::new(false),
+            last_bank_swap_at: Instant::now(),
+            swap_qualify_streak: 0,
+            precharge_req: precharge_req,
+            last_swap_epoch: Arc::new(AtomicU64::new(0)),
+            swap_epoch_at_call: 0,
         };
     }
 
+    #[allow(dead_code)]
     fn spawn_copy_thread(&mut self) {
         if self.copythread_worker.is_some() {
             return;
-        } // 이미 돌고 있으면 패스
+        }
 
-        // 2차 Producer들을 스레드로 move
-        let mut outs: Vec<Producer<[f32; 2]>> = Vec::with_capacity(self.playout_producers.len());
-        for p in &mut self.playout_producers {
+        // 두 뱅크 모두 move. 스레드 안에서 active_idx 보고 standby만 채움.
+        let mut outs0: Vec<Producer<[f32; 2]>> =
+            Vec::with_capacity(self.playout_producers_bank[0].len());
+        let mut outs1: Vec<Producer<[f32; 2]>> =
+            Vec::with_capacity(self.playout_producers_bank[1].len());
+        for p in &mut self.playout_producers_bank[0] {
             if let Some(tx) = p.take() {
-                outs.push(tx);
-            } else {
+                outs0.push(tx);
+            }
+        }
+        for p in &mut self.playout_producers_bank[1] {
+            if let Some(tx) = p.take() {
+                outs1.push(tx);
             }
         }
 
         self.copythread_stop.store(false, Ordering::Relaxed);
-        // 캡처할 공유 상태들 (self 캡처 금지)
-        let cons_c = Arc::clone(&self.consumers);
-        let rt_c = Arc::clone(&self.track_run_time);
+
+        // 공유 상태 캡처
+        let cons_c = Arc::clone(&self.consumers); // RB1: f32 (L,R,L,R,...)
         let wait_c = Arc::clone(&self.thread_wait);
         let repl_stop_c = Arc::clone(&self.copythread_stop);
-        let params_c = Arc::clone(&self.real_time_params);
         let seek_epoch_c = Arc::clone(&self.seek_epoch);
         let budget_c = Arc::clone(&self.budget);
-
+        let rb2_level_c = Arc::clone(&self.rb2_level);
+        let rb2_level_sb_c = Arc::clone(&self.rb2_level_sb);
+        let active_idx_c = Arc::clone(&self.active_idx);
+        let precharge_req_c = Arc::clone(&self.precharge_req);
         let handle = std::thread::spawn(move || {
-            let mut last_epoch = seek_epoch_c.load(Ordering::Acquire);
-            let mut states: Vec<RateState> = Vec::new();
-            let mut src_fifos: Vec<VecDeque<f32>> = Vec::new();
+            bump_priority_copy_thread();
+            pin_to_core(0);
+            let mut _last_epoch = seek_epoch_c.load(Ordering::Acquire);
+
             loop {
                 if repl_stop_c.load(Ordering::Relaxed) {
                     break;
                 }
-                let ntracks_rt = rt_c.len();
-                let ntracks_rb = outs.len();
-                let ntracks = ntracks_rt.min(ntracks_rb);
-                if ntracks == 0 {
-                    std::thread::yield_now();
-                    continue;
-                }
 
-                // 대기 플래그
+                // 전역 일시정지(시킹/플러시) 게이트
                 {
                     let (lock, cvar) = &*wait_c;
                     let mut waiting = lock.lock().unwrap();
@@ -529,279 +610,123 @@ impl Engine {
                     }
                 }
 
-                // if ntracks == 0 {
-                //     std::thread::yield_now();
-                //     continue;
-                // }
-
-                if states.len() != ntracks {
-                    states = (0..ntracks)
-                        .map(|_| RateState {
-                            frac: 0.0,
-                            prev_l: 0.0,
-                            prev_r: 0.0,
-                            next_l: 0.0,
-                            next_r: 0.0,
-                            primed: false,
-                            step: 1.0,
-                        })
-                        .collect();
-                }
-
-                if src_fifos.len() != ntracks {
-                    src_fifos = (0..ntracks).map(|_| VecDeque::<f32>::new()).collect();
-                }
-
-                // seek_epoch 바뀌면 내부상태 초기화
-                let cur_epoch = seek_epoch_c.load(Ordering::Acquire);
-                if cur_epoch != last_epoch {
-                    for f in &mut src_fifos {
-                        f.clear();
+                // seek epoch 변동 감지(필요시 로컬 상태 초기화 지점)
+                {
+                    let cur = seek_epoch_c.load(Ordering::Acquire);
+                    if cur != _last_epoch {
+                        _last_epoch = cur;
+                        // 로컬 상태 없으니 지금은 noop
                     }
-                    for st in &mut states {
-                        *st = RateState {
-                            frac: 0.0,
-                            prev_l: 0.0,
-                            prev_r: 0.0,
-                            next_l: 0.0,
-                            next_r: 0.0,
-                            primed: false,
-                            step: 1.0,
-                        };
-                    }
-                    last_epoch = cur_epoch;
                 }
 
-                for idx in 0..ntracks {
-                    let mut pulled_from_rb1 = 0usize;
-                    let pp = &mut outs[idx];
+                // 지금 시점의 standby 선택
+                let a = active_idx_c.load(Ordering::Acquire);
+                let standby = a ^ 1;
+                let outs = if standby == 0 { &mut outs0 } else { &mut outs1 };
+                let standby_levels = if standby == 0 {
+                    &rb2_level_c
+                } else {
+                    &rb2_level_sb_c
+                };
+                let ntracks = outs.len();
+                if ntracks == 0 {
+                    std::thread::yield_now();
+                    continue;
+                }
+                // ★ "더 비어있는 트랙부터"도 standby 레벨 기준으로 정렬
+                let mut order: Vec<usize> = (0..ntracks).collect();
+                order.sort_by_key(|&i| standby_levels[i].load(Ordering::Relaxed));
+
+                let mut did_anything = false;
+                for ti in order {
+                    let pp = &mut outs[ti];
                     if pp.is_full() {
                         continue;
                     }
 
-                    // speed: 1배 기준으로 스케일
-                    let st = &mut states[idx];
-                    // target step
-                    let target = 1.0_f32;
+                    // 현재 RB2 레벨
+                    let mut level = standby_levels[ti].load(Ordering::Relaxed);
 
-                    // ★ 빠른 반응 + 큰 변화는 스냅
-                    let diff = target - st.step;
+                    // ★ 충전 모드 여부 확인
+                    let precharge = precharge_req_c.load(Ordering::Acquire);
 
-                    // 큰 점프(예: 0.15배속 이상)면 즉시 스냅
-                    if diff.abs() > 0.15 {
-                        st.step = target;
+                    // ★ 목표치: 충전 모드면 거의 만땅까지, 아니면 기존 HIGH_FRAMES까지만
+                    let goal = if precharge {
+                        SWAP_TARGET_STANDBY
                     } else {
-                        // 작은 변화는 빠른 슬루(지수 이동): 알파 0.25~0.35 권장
-                        let alpha = 0.30;
-                        st.step += diff * alpha;
+                        HIGH_FRAMES
+                    };
 
-                        // 너무 느린 꼬리 끊기
-                        if (target - st.step).abs() < 0.15 {
-                            st.step = target;
-                        } else {
-                            let alpha = 0.30; // 0.2~0.35
-                            st.step += (target - st.step) * alpha;
-                            if (target - st.step).abs() < 0.005 {
-                                st.step = target;
-                            }
-                        }
-                    }
-                    let speed = 1.0_f32;
-
-                    // HWM과 버스트를 speed에 맞춰 확장 (상한선도 걸어둚)
-                    let fifo_hwm = (((FIFO_HWM_FRAMES as f32) * speed).round() as usize)
-                        .clamp(8_192, FIFO_MAX_FRAMES);
-                    let pull_burst =
-                        (((PULL_BURST_FRAMES as f32) * speed).round() as usize).clamp(2_048, 8_192);
-
-                    //1차 consumer 가 상환보다 높으면 가져오지말고 양보 및 뽑은거 제거해서 동기화
-                    {
-                        let fifo = &mut src_fifos[idx];
-                        let mut cur = fifo.len() / CHANNELS;
-                        if cur < FIFO_LWM_FRAMES {
-                            let want = (FIFO_LWM_FRAMES - cur).min(fifo_hwm.saturating_sub(cur));
-                            if let Ok(mut rc) = cons_c[idx].lock() {
-                                let mut pulled = 0usize;
-                                while pulled < want {
-                                    match (rc.pop(), rc.pop()) {
-                                        (Ok(l), Ok(r)) => {
-                                            fifo.push_back(l);
-                                            fifo.push_back(r);
-                                            pulled += 1;
-                                            pulled_from_rb1 += 1;
-                                        }
-                                        _ => break,
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    {
-                        let fifo = &mut src_fifos[idx];
-                        let cur = fifo.len() / CHANNELS;
-                        if cur < fifo_hwm {
-                            if let Ok(mut rc) = cons_c[idx].lock() {
-                                let want = (fifo_hwm - cur).min(pull_burst * 32);
-                                let mut pulled = 0usize;
-                                while pulled < want {
-                                    match (rc.pop(), rc.pop()) {
-                                        (Ok(l), Ok(r)) => {
-                                            fifo.push_back(l);
-                                            fifo.push_back(r);
-                                            pulled += 1;
-                                            pulled_from_rb1 += 1;
-                                        }
-                                        _ => break,
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // 2) priming
-                    if !st.primed {
-                        // 최소 2프레임 필요
-                        if src_fifos[idx].len() < 4 {
-                            let mut pulled_any = 0usize;
-                            if let Ok(mut rc) = cons_c[idx].lock() {
-                                let want = (FIFO_LWM_FRAMES.min(pull_burst * 2))
-                                    .saturating_sub(src_fifos[idx].len() / CHANNELS);
-                                let mut pulled = 0usize;
-                                while pulled < want {
-                                    match (rc.pop(), rc.pop()) {
-                                        (Ok(l), Ok(r)) => {
-                                            src_fifos[idx].push_back(l);
-                                            src_fifos[idx].push_back(r);
-                                            pulled += 1;
-                                            pulled_any += 1;
-                                            pulled_from_rb1 += 1;
-                                        }
-                                        _ => break, // 더 없음
-                                    }
-                                }
-                            }
-                            // ★ 진짜 아무 것도 못 땡겼으면 잠깐 양보/대기
-                            if pulled_any == 0 && src_fifos[idx].len() < 4 {
-                                // condvar로 아주 짧게 기다리거나
-                                let (mx, cv) = &*wait_c;
-                                let g = mx.lock().unwrap();
-                                let _ = cv.wait_timeout(g, Duration::from_micros(200));
-                                continue; // 다음 턴/트랙
-                            }
-                        }
-
-                        if src_fifos[idx].len() >= 4 {
-                            let pl = src_fifos[idx].pop_front().unwrap();
-                            let pr = src_fifos[idx].pop_front().unwrap();
-                            let nl = src_fifos[idx].pop_front().unwrap();
-                            let nr = src_fifos[idx].pop_front().unwrap();
-                            st.prev_l = pl;
-                            st.prev_r = pr;
-                            st.next_l = nl;
-                            st.next_r = nr;
-                            st.frac = 0.0;
-                            st.primed = true;
-                        } else {
-                            continue; // 아직도 부족
-                        }
-                    }
-
-                    let mut produced = 0usize;
-                    // 3) 2차 producer로 출력
-                    while !pp.is_full() {
-                        let yl = st.prev_l + (st.next_l - st.prev_l) * st.frac;
-                        let yr = st.prev_r + (st.next_r - st.prev_r) * st.frac;
-
-                        if pp.push([yl, yr]).is_err() {
+                    // 핵심: RB2가 HIGH_FRAMES에 닿을 때까지 퍼붓는 루프
+                    while level < goal {
+                        if pp.is_full() {
                             break;
                         }
-                        produced += 1;
-                        st.frac += st.step;
-                        while st.frac >= 1.0 {
-                            st.frac -= 1.0;
 
-                            if src_fifos[idx].len() < 2 {
-                                if let Ok(mut rc) = cons_c[idx].lock() {
-                                    let need = 2usize.max(FIFO_LWM_FRAMES.min(pull_burst));
-                                    let mut pulled = 0usize;
-                                    while pulled < need {
-                                        match (rc.pop(), rc.pop()) {
-                                            (Ok(l), Ok(r)) => {
-                                                src_fifos[idx].push_back(l);
-                                                src_fifos[idx].push_back(r);
-                                                pulled += 1;
-                                                pulled_from_rb1 += 1;
-                                            }
-                                            _ => break,
+                        // 이번 사이클에서 채울 목표량
+                        let want = goal - level;
+                        let urgent = level <= (LOW_FRAMES / 2);
+
+                        // ★ 충전 모드일 때는 더 큰 벌크로 끌어온다
+                        let burst = if precharge {
+                            CHUNK_COPY * 3
+                        } else if urgent {
+                            CHUNK_COPY * 2
+                        } else {
+                            CHUNK_COPY
+                        };
+                        let mut todo = core::cmp::min(want, burst);
+
+                        // RB1 -> RB2 벌크 이동
+                        let mut moved = 0usize;
+                        if let Ok(mut rc) = cons_c[ti].lock() {
+                            while moved < todo && !pp.is_full() {
+                                match (rc.pop(), rc.pop()) {
+                                    (Ok(l), Ok(r)) => {
+                                        if pp.push([l, r]).is_err() {
+                                            break;
                                         }
+                                        moved += 1;
                                     }
-                                }
-                                if src_fifos[idx].len() < 2 {
-                                    break;
-                                };
-                            }
-                            if let (Some(nl), Some(nr)) =
-                                (src_fifos[idx].pop_front(), src_fifos[idx].pop_front())
-                            {
-                                st.prev_l = st.next_l;
-                                st.prev_r = st.next_r;
-                                st.next_l = nl;
-                                st.next_r = nr;
-                            } else {
-                                // 재프라임 유도: 다음 루프에서 src_fifos 채움 후 priming부터 다시 시작
-                                st.primed = false;
-                                break;
-                            }
-                        }
-                        let cur_frames = src_fifos[idx].len() / CHANNELS;
-                        if cur_frames < fifo_hwm {
-                            if let Ok(mut rc) = cons_c[idx].lock() {
-                                let want = (fifo_hwm - cur_frames).min(pull_burst * 8);
-                                let mut pulled = 0usize;
-                                while pulled < want {
-                                    match (rc.pop(), rc.pop()) {
-                                        (Ok(l), Ok(r)) => {
-                                            src_fifos[idx].push_back(l);
-                                            src_fifos[idx].push_back(r);
-                                            pulled += 1;
-                                            pulled_from_rb1 += 1;
-                                        }
-                                        _ => break,
+                                    _ => {
+                                        // RB1 말랐음. 바깥에서 채우고 다시 시도.
+                                        break;
                                     }
                                 }
                             }
                         }
+
+                        if moved == 0 {
+                            // RB1이 말랐음 → 워커 깨우고 이 트랙은 패스
+                            let (_, cv) = &*wait_c;
+                            cv.notify_all();
+                            break;
+                        } else {
+                            // 이동 성공
+                            level += moved;
+                            standby_levels[ti].fetch_add(moved, Ordering::Relaxed);
+                            did_anything = true;
+
+                            // 생산 예산 감소(“엔진→디바이스로 옮긴 만큼”)
+                            budget_c.sub(moved);
+
+                            // 아직 HIGH에 못 닿았으면 루프 계속 돌아서 더 채운다
+                        }
                     }
-                    let fifo_len = {
-                        let fifo = &src_fifos[idx];
-                        fifo.len() / CHANNELS
-                    };
-                    let n = CTR_COPY.fetch_add(1, Ordering::Relaxed);
-                    if n % 256 == 0 {
-                        rlog!(
-                            "[copy idx={}] fifo={}, pulled_rb1={}, hwm={}, lwm={}",
-                            idx,
-                            fifo_len,
-                            pulled_from_rb1,
-                            fifo_hwm,
-                            FIFO_LWM_FRAMES
-                        );
-                    }
-                    if produced == 0 && src_fifos[idx].len() < 2 {
-                        std::thread::yield_now();
-                        continue;
-                    }
-                    if pulled_from_rb1 > 0 {
-                        budget_c.sub(pulled_from_rb1);
-                        let (_, cv) = &*wait_c;
-                        cv.notify_all();
-                    }
+                }
+
+                if !did_anything {
+                    let (lock, cv) = &*wait_c;
+                    // waiting 플래그는 재생 중 항상 false이므로, 단순 타임아웃 wait만 쓴다
+                    let guard = lock.lock().unwrap();
+                    let _ = cv.wait_timeout(guard, std::time::Duration::from_micros(200));
                 }
             }
         });
+
         self.copythread_worker = Some(handle);
     }
-
+    #[allow(dead_code)]
     fn stop_copy_thread(&mut self) {
         if self.copythread_worker.is_none() {
             return;
@@ -814,9 +739,9 @@ impl Engine {
         self.copythread_stop.store(false, Ordering::Relaxed);
 
         // 스레드가 2차 P를 drop했으니, 다시 쓸 수 있도록 재생성
-        self.rebuild_rb2_ringbuffers();
+        self.rebuild_rb2_bank_ringbuffers();
     }
-
+    #[allow(dead_code)]
     fn rebuild_rb2_ringbuffers(&mut self) {
         self.playout_producers.clear();
         self.playout_consumers.clear();
@@ -875,7 +800,7 @@ impl Engine {
         //     self.playout_consumers[i] = Some(rx);
         // }
     }
-
+    #[allow(dead_code)]
     fn start_output_from_ringbuffer(&mut self) -> anyhow::Result<cpal::Stream> {
         let host = cpal::default_host(); //기본 오디오 호스트 (Windows: WASAPI, Linux: ALSA/PulseAudio 등)
         let device = host
@@ -1122,8 +1047,8 @@ impl Engine {
 
     fn prefill_rb1_blocking(&self, frames: usize) -> Result<(), String> {
         let sr = self.play_time_manager.sr();
+        let tpos = self.play_time_manager.pos_frames();
         let n = self.track.len();
-
         for i in 0..n {
             let mut tr = match self.track_run_time[i].lock() {
                 Ok(g) => g,
@@ -1137,89 +1062,312 @@ impl Engine {
                 Ok(g) => g,
                 Err(_) => continue,
             };
-            let produced = fill_track_once(&mut tr, &mut dec, &mut prod, frames, sr)?;
+            let tempo_ratio = {
+                let bpm_bits = self.real_time_params.bpm.load(Ordering::Relaxed);
+                let bpm = f32::from_bits(bpm_bits);
+                (bpm / BASE_BPM).clamp(0.25, 4.0)
+            };
+            let produced =
+                fill_track_once(&mut tr, &mut dec, &mut prod, frames, sr, tempo_ratio, tpos)?;
             self.budget.add(produced);
         }
         Ok(())
     }
+
+    #[allow(dead_code)]
     pub fn prefill_rb2_blocking(&mut self, target_frames: usize) -> Result<(), String> {
         if self.copythread_worker.is_some() {
             return Err("RB2 prefill must run before copy thread starts".into());
         }
+
         if self.sound_output.is_some() {
             return Err("RB2 prefill must run before output stream starts".into());
         }
         let sr = self.play_time_manager.sr();
         let ntracks = self.track.len();
-        let mut filled: Vec<usize> = vec![0; ntracks];
+        let active = self.active_idx.load(Ordering::Relaxed);
+        let tpos = self.play_time_manager.pos_frames();
+        // 두 뱅크를 순차로 채운다: bank = 0, 1
+        for bank in 0..2 {
+            let mut filled: Vec<usize> = vec![0; ntracks];
+            'outer_each_bank: loop {
+                let mut all_ok = true;
 
-        'outer: loop {
-            let mut all_ok = true;
-
-            for i in 0..ntracks {
-                if filled[i] >= target_frames {
-                    continue;
-                }
-                all_ok = false;
-
-                // RB2 producer를 "그 순간"에만 빌린다 (참조를 저장하지 않음!)
-                let Some(rb2) = self.playout_producers[i].as_mut() else {
-                    return Err(format!(
-                        "RB2 producer[{i}] not available (already moved by stream/copy-thread?)"
-                    ));
-                };
-
-                if rb2.is_full() {
-                    std::thread::yield_now();
-                    continue;
-                }
-
-                // RB1에서 L/R 1프레임 뽑기
-                let mut l_opt = None;
-                let mut r_opt = None;
-                if let Ok(mut rc) = self.consumers[i].lock() {
-                    l_opt = rc.pop().ok();
-                    r_opt = rc.pop().ok();
-                }
-
-                // 부족하면 RB1 보충
-                if l_opt.is_none() || r_opt.is_none() {
-                    {
-                        let mut tr = self.track_run_time[i].lock().map_err(|_| "rt lock")?;
-                        let mut dec = self.decod[i].lock().map_err(|_| "dec lock")?;
-                        let mut prod = self.producers[i].lock().map_err(|_| "prod lock")?;
-                        let n = fill_track_once(&mut *tr, &mut *dec, &mut *prod, CHUNK_DECODE, sr)
-                            .map_err(|e| format!("fill_track_once: {e}"))?;
-                        self.budget.add(n);
+                for i in 0..ntracks {
+                    if filled[i] >= target_frames {
+                        continue;
                     }
+                    all_ok = false;
+
+                    let Some(rb2) = self.playout_producers_bank[bank][i].as_mut() else {
+                        return Err(format!("RB2 bank{bank} producer[{i}] not available"));
+                    };
+                    if rb2.is_full() {
+                        std::thread::yield_now();
+                        continue;
+                    }
+
+                    // RB1에서 L/R 1프레임 뽑기
+                    let mut l_opt = None;
+                    let mut r_opt = None;
                     if let Ok(mut rc) = self.consumers[i].lock() {
-                        if l_opt.is_none() {
-                            l_opt = rc.pop().ok();
+                        l_opt = rc.pop().ok();
+                        r_opt = rc.pop().ok();
+                    }
+
+                    // 부족하면 RB1 보충
+                    if l_opt.is_none() || r_opt.is_none() {
+                        {
+                            let mut tr = self.track_run_time[i].lock().map_err(|_| "rt lock")?;
+                            let mut dec = self.decod[i].lock().map_err(|_| "dec lock")?;
+                            let mut prod = self.producers[i].lock().map_err(|_| "prod lock")?;
+                            let tempo_ratio = {
+                                let bpm_bits = self.real_time_params.bpm.load(Ordering::Relaxed);
+                                let bpm = f32::from_bits(bpm_bits);
+                                (bpm / BASE_BPM).clamp(0.25, 4.0)
+                            };
+                            let n = fill_track_once(
+                                &mut *tr,
+                                &mut *dec,
+                                &mut *prod,
+                                CHUNK_DECODE,
+                                sr,
+                                tempo_ratio,
+                                tpos,
+                            )
+                            .map_err(|e| format!("fill_track_once: {e}"))?;
+                            self.budget.add(n);
                         }
-                        if r_opt.is_none() {
-                            r_opt = rc.pop().ok();
+                        if let Ok(mut rc) = self.consumers[i].lock() {
+                            if l_opt.is_none() {
+                                l_opt = rc.pop().ok();
+                            }
+                            if r_opt.is_none() {
+                                r_opt = rc.pop().ok();
+                            }
                         }
+                    }
+
+                    let (Some(l), Some(r)) = (l_opt, r_opt) else {
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                        continue;
+                    };
+
+                    if rb2.push([l, r]).is_ok() {
+                        filled[i] += 1;
+                        self.budget.sub(1);
+                        if bank == active {
+                            self.rb2_level[i].fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            self.rb2_level_sb[i].fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        std::thread::yield_now();
                     }
                 }
 
-                let (Some(l), Some(r)) = (l_opt, r_opt) else {
-                    std::thread::sleep(std::time::Duration::from_micros(200));
-                    continue;
-                };
-
-                if rb2.push([l, r]).is_ok() {
-                    filled[i] += 1;
-                    self.budget.sub(1);
-                } else {
-                    std::thread::yield_now();
+                if all_ok {
+                    break 'outer_each_bank;
                 }
-            }
-
-            if all_ok {
-                break 'outer;
             }
         }
+        Ok(())
+    }
 
+    fn rebuffer_current(&mut self) {
+        let lock = std::sync::Arc::clone(&self.seek_lock);
+        let _guard = lock.lock().unwrap();
+
+        self.pause_workers();
+
+        self.align_write_pos_to_transport();
+        self.seek_epoch.fetch_add(1, Ordering::Release);
+
+        if self.has_pending_bpm.swap(false, Ordering::AcqRel) {
+            let b_bits = self.pending_bpm.load(Ordering::Acquire);
+            self.real_time_params.bpm.store(b_bits, Ordering::Relaxed);
+        }
+
+        // ★★★ 여기서 디코더 리셋/시크
+        let sr = self.play_time_manager.sr();
+        let tpos = self.play_time_manager.pos_frames();
+        let tempo_ratio = {
+            let bpm_bits = self.real_time_params.bpm.load(Ordering::Relaxed);
+            let bpm = f32::from_bits(bpm_bits);
+            (bpm / BASE_BPM).clamp(0.25, 4.0)
+        };
+        for i in 0..self.track.len() {
+            if let (Ok(tr), Ok(mut dec)) = (self.track_run_time[i].lock(), self.decod[i].lock()) {
+                let _ = self.reset_decoder_to_tpos(&*tr, &mut *dec, tpos, sr, tempo_ratio);
+            }
+        }
+        self.flush_ringbuffers();
+        self.budget.reset();
+
+        let _ = self.prefill_rb1_blocking(PREFILL_ON_SEEK * 2);
+        self.wake_workers();
+        self.last_auto_rebuffer_at = Instant::now();
+    }
+
+    #[inline]
+    fn with_seek_lock<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        // 1) 필드를 '읽는' 대여를 한 줄에서 끝내야 함
+        let lock = std::sync::Arc::clone(&self.seek_lock);
+
+        // 2) guard는 '복사된 Arc'에서 뽑음 (self에 대한 불변 대여 없음)
+        let _guard = lock.lock().unwrap();
+
+        // 3) guard가 살아있는 동안에도 &mut self 사용 가능
+        f(self)
+        // 4) 스코프 끝나며 _guard drop
+    }
+
+    #[allow(dead_code)]
+    fn try_bank_swap(&mut self) {
+        const DWELL_MS: u64 = 2000; // 스왑 최소 간격
+        const DEBOUNCE_N: usize = 32; // 스왑 판정 안정화
+
+        let now = Instant::now();
+        if now.duration_since(self.last_bank_swap_at) < Duration::from_millis(DWELL_MS) {
+            return;
+        }
+
+        // 현재 active/standby 레벨 배열
+        let a = self.active_idx.load(Ordering::Acquire);
+        let (lvl_active, lvl_standby) = if a == 0 {
+            (&self.rb2_level, &self.rb2_level_sb)
+        } else {
+            (&self.rb2_level_sb, &self.rb2_level)
+        };
+
+        let min_active = lvl_active
+            .iter()
+            .map(|x| x.load(Ordering::Relaxed))
+            .min()
+            .unwrap_or(0);
+        let min_standby = lvl_standby
+            .iter()
+            .map(|x| x.load(Ordering::Relaxed))
+            .min()
+            .unwrap_or(0);
+
+        // 🔒 트랙별 최소치도 확인 (전 트랙이 SWAP_TARGET_STANDBY 이상일 때만)
+        let standby_ok_all_tracks = lvl_standby
+            .iter()
+            .all(|lv| lv.load(Ordering::Relaxed) >= SWAP_TARGET_STANDBY);
+
+        // 액티브가 충분히 낮아야 스왑 고려
+        if min_active <= SWAP_MIN_ACTIVE {
+            // 스탠바이가 모자라면: 스왑 금지, 충전만 요청
+            if !(min_standby >= SWAP_MIN_STANDBY && standby_ok_all_tracks) {
+                self.precharge_req.store(true, Ordering::Release); // ★ 스탠바이 강제 충전 ON
+                self.swap_qualify_streak = 0;
+                self.wake_workers();
+                return;
+            }
+
+            // 여기까지 오면 “거의 만땅” → 디바운스 후 스왑
+            self.swap_qualify_streak += 1;
+            if self.swap_qualify_streak >= DEBOUNCE_N {
+                self.active_idx.store(a ^ 1, Ordering::Release);
+                self.last_bank_swap_at = now;
+                self.swap_qualify_streak = 0;
+                self.precharge_req.store(false, Ordering::Release); // 스왑 직후 충전요청 해제
+                self.last_swap_epoch.fetch_add(1, Ordering::Release);
+            }
+        } else {
+            self.swap_qualify_streak = 0;
+            // 상황에 따라 여기서 선충전 켤 수도 있음(원하면 주석 해제)
+            self.precharge_req.store(true, Ordering::Release);
+        }
+    }
+    #[allow(dead_code)]
+    fn rebuild_rb2_bank_ringbuffers(&mut self) {
+        let n = self.track.len();
+
+        // 새로 모두 만든다 (두 뱅크 모두)
+        let mut bank_prod0 = Vec::with_capacity(n);
+        let mut bank_cons0 = Vec::with_capacity(n);
+        let mut bank_prod1 = Vec::with_capacity(n);
+        let mut bank_cons1 = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let (tx0, rx0) = RingBuffer::<[f32; 2]>::new(RB2_FRAMES);
+            let (tx1, rx1) = RingBuffer::<[f32; 2]>::new(RB2_FRAMES);
+            bank_prod0.push(Some(tx0));
+            bank_cons0.push(Some(rx0));
+            bank_prod1.push(Some(tx1));
+            bank_cons1.push(Some(rx1));
+        }
+
+        self.playout_producers_bank = [bank_prod0, bank_prod1];
+        self.playout_consumers_bank = [bank_cons0, bank_cons1];
+
+        // 레벨/상태 초기화
+        for lvl in self.rb2_level.iter() {
+            lvl.store(0, Ordering::Relaxed);
+        }
+        for lvl in self.rb2_level_sb.iter() {
+            lvl.store(0, Ordering::Relaxed);
+        }
+        self.active_idx.store(0, Ordering::Relaxed);
+        self.last_bank_swap_at = Instant::now();
+    }
+
+    fn reset_decoder_to_tpos(
+        &self,
+        tr: &TrackTimeline,
+        dec: &mut Option<DecoderState>,
+        tpos_frames: u64,
+        out_sr: u32,
+        tempo_ratio: f32,
+    ) -> Result<(), String> {
+        let Some(d) = dec.as_mut() else {
+            return Ok(());
+        };
+
+        // tpos가 포함된 클립 찾기
+        let active = tr
+            .clips
+            .range(..=tpos_frames)
+            .next_back()
+            .and_then(|(_, c)| {
+                let end = c.tl_start.saturating_add(c.tl_len);
+                if tpos_frames < end {
+                    Some(c)
+                } else {
+                    None
+                }
+            });
+
+        // 클립이 없으면 그냥 0으로 맞추고 종료(무음 구간은 fill에서 처리)
+        let Some(clip) = active else {
+            d.decoder.reset();
+            d.sample_buf.clear();
+            d.src_pos_samples = 0;
+            return Ok(());
+        };
+
+        // 타임라인→소스 좌표 변환(템포 반영)
+        let rel = (tpos_frames.saturating_sub(clip.tl_start)) as f64;
+        let step = (d.src_sr as f64 / out_sr as f64) * (tempo_ratio as f64);
+        let approx_src_samples = (rel * step).floor() as u64;
+
+        // 정확 시크
+        let time = Time::from(approx_src_samples as f64 / d.src_sr as f64);
+        d.format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time,
+                    track_id: None,
+                },
+            )
+            .map_err(|e| format!("format.seek failed: {e}"))?;
+
+        d.decoder.reset();
+        d.sample_buf.clear();
+        d.src_pos_samples = approx_src_samples;
         Ok(())
     }
 }

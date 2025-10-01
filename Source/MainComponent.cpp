@@ -259,6 +259,9 @@ MainComponent::MainComponent()
 }
 MainComponent::~MainComponent()
 {
+    if (audioEngine && audioEngine->host_)
+        audioEngine->host_->clearPlugins();
+
     for (auto& s : pluginSlots) {
         if (s.instance) {
             s.instance->suspendProcessing(true);
@@ -589,6 +592,10 @@ bool MainComponent::loadVST3FromFile(const juce::String& path, double sampleRate
                 it->instance = std::move(inst);
                 it->instance->prepareToPlay(sampleRate, blockSize);
 
+                // 호스트 체인에 등록 (소유권은 그대로 여기 유지)
+                if (audioEngine && audioEngine->host_)
+                    audioEngine->host_->addPlugin(it->instance.get());
+
                 if (it->instance->hasEditor())                   //instance plugin is GUI true?? false??
                 {
                     auto* editor = it->instance->createEditorIfNeeded();         //GUI create Component
@@ -599,6 +606,9 @@ bool MainComponent::loadVST3FromFile(const juce::String& path, double sampleRate
 
                     // 이 창만 닫을 때, 이 슬롯만 정리
                     it->window->onClose = [this, it]() mutable {                       //mutable is  compare Rust is mut ok? mut Lambda
+                        if (!it->instance) { it->window.reset(); pluginSlots.erase(it); return; }
+                        if (audioEngine && audioEngine->host_)
+                            audioEngine->host_->removePlugin(it->instance.get());
                         if (it->instance) {                                            //instance Ok?
                             it->instance->suspendProcessing(true);                     //suspendProcessing is here plugin not now and wait
                             it->instance->releaseResources();                          //it->instance->prepareToPlay(sampleRate, blockSize);  is clear

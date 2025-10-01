@@ -14,6 +14,7 @@
 #include <vector>
 #include <cstdint>
 #include "soundData.h"
+#include "AudioHostController.h"
 extern "C"
 {
     struct Engine;
@@ -36,12 +37,15 @@ extern "C"
     bool rust_sound_mute_update(Engine* engine, bool mute, std::int32_t number);
     bool rust_sound_pan_update(Engine* engine, float pan, std::int32_t number);
     bool rust_sound_bpm_update(Engine* engine, float bpm);
-    
+
+    size_t rust_render_interleaved(Engine* engine, float* inter, size_t frames, uint32_t ch);
+    void rust_engine_set_sr(Engine* engine, uint32_t sr);
+    void rust_audio_tick(Engine* engine);
+
     uint64_t rust_transport_pos(Engine* engine);
     uint32_t rust_transport_sr (Engine* engine);
     bool rust_transport_is_playing(Engine* engine);
     bool rust_sound_seek(Engine* engine, uint64_t s);
-
     uint32_t rust_audio_params_out_sr(Engine* engine);
     uint32_t rust_audio_params_out_bs(Engine* engine);
 }
@@ -68,7 +72,7 @@ public:
    /* void rust_engine_delete();*/
 
     void rust_start_sound(bool bstart);
-
+    void rust_eng_tick();
     bool rust_file_update(int32_t number, const char* path, uint64_t tl_start, uint64_t tl_len, uint32_t src);
     bool rust_file_move(int32_t old_track, uint64_t old_start, int32_t new_track, uint64_t new_start);
     bool rust_file_delet(int32_t track, uint64_t start);
@@ -89,6 +93,8 @@ public:
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_2;
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_3;
     EnginePtr eng;
+
+    std::unique_ptr<AudioHostController> host_ = nullptr;
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

@@ -28,4 +28,7 @@ void TimeHandler::timerCallback()
     *subTime = pos;
     timeline.sr = sr;
     playhead.setValue((double)pos, juce::dontSendNotification);
+    if (isPlaying) {
+        aEng.rust_eng_tick();
+    }
 }

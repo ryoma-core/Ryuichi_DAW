@@ -1,8 +1,12 @@
+use crate::rlog;
 use crate::unit::*;
 use crate::Clip;
 use crate::DecoderState;
+use crate::Duration;
 use crate::Engine;
+use crate::Instant;
 use crate::TrackTimeline;
+use crate::CTR_CB;
 pub use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 pub use cpal::{Sample, SampleFormat};
 pub use rtrb::{Consumer, Producer, RingBuffer};
@@ -26,6 +30,10 @@ pub use symphonia::core::{
     units::Time,
 };
 pub use symphonia::default::{get_codecs, get_probe};
+pub use windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    THREAD_PRIORITY_TIME_CRITICAL,
+};
 
 #[no_mangle]
 pub extern "C" fn rust_sound_play(engine: *mut Engine) -> bool {
@@ -33,47 +41,22 @@ pub extern "C" fn rust_sound_play(engine: *mut Engine) -> bool {
         return false;
     }
     let eng = unsafe { &mut *engine };
-    {
-        let seek_lock = eng.seek_lock.clone();
-        let _guard = seek_lock.lock().unwrap();
-        // 0) 초기 정렬 + 기존 큐 비우기
+
+    eng.with_seek_lock(|eng| {
+        // 1) 엔진 상태 정렬
         eng.pause_workers();
         eng.align_write_pos_to_transport();
         eng.flush_ringbuffers();
         eng.budget.reset();
-    }
 
-    // 1) 충분히 프리필 (최소 0.5s~1.0s 권장)
-    // 48k 기준 24_576(≈0.512s) ~ 49_152(≈1.024s) 정도
-    let _ = eng.prefill_rb1_blocking(PREFILL_ON_START);
-    let target_rb2 = PREFILL_RB2_FRAMES.min(RB2_FRAMES.saturating_sub(2048));
-    let _ = eng.prefill_rb2_blocking(target_rb2);
+        // 2) RB1만 프리필
+        let _ = eng.prefill_rb1_blocking(PREFILL_ON_START);
+    });
 
-    // 2) 복제 스레드 시작(이제 1차에 데이터가 있음)
-    if eng.copythread_worker.is_none() {
-        eng.spawn_copy_thread();
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(80));
-
-    // 스트림 보장
-    if eng.sound_output.is_none() {
-        match eng.start_output_from_ringbuffer() {
-            Ok(stream) => {
-                eng.sound_output = Some(stream);
-            }
-            Err(_) => return false,
-        }
-    } else if let Some(stream) = eng.sound_output.as_ref() {
-        let _ = stream.play();
-    }
-
-    eng.flush_flag
-        .store(false, std::sync::atomic::Ordering::Release);
-
-    // 4) 트랜스포트 ON + 워커 깨우기
+    // 3) 재생 시작
     eng.play_time_manager.start();
     eng.wake_workers();
+    eng.last_auto_rebuffer_at = Instant::now();
     true
 }
 
@@ -83,22 +66,13 @@ pub extern "C" fn rust_sound_stop(engine: *mut Engine) -> bool {
         return false;
     }
     let eng = unsafe { &mut *engine };
-    {
-        let seek_lock = eng.seek_lock.clone();
-        let _guard = seek_lock.lock().unwrap();
-        // 1) 재생 정지 + 워커 대기
+
+    eng.with_seek_lock(|eng| {
         eng.play_time_manager.stop();
         eng.pause_workers();
-    }
-
-    // 2) CPAL 스트림을 엔진에서 떼어내서 drop (콜백이 들고 있던 2차 Consumer도 같이 drop됨)
-    if let Some(stream) = eng.sound_output.take() {
-        let _ = stream.pause();
-    }
-
-    // 3) 복제 스레드 종료 → 2차 링버퍼 재생성
-    eng.stop_copy_thread();
-    eng.budget.reset();
+        eng.flush_ringbuffers(); // 선택: 멈출 때 비워두면 다음 시작이 깔끔
+        eng.budget.reset();
+    });
 
     true
 }
@@ -109,34 +83,121 @@ pub extern "C" fn rust_sound_seek(engine: *mut Engine, pos_frames: u64) -> bool 
         return false;
     }
     let eng = unsafe { &mut *engine };
+    let was_playing = eng.play_time_manager.in_playing();
 
-    {
-        let seek_lock = eng.seek_lock.clone();
-        let _guard = seek_lock.lock().unwrap();
-
-        let was_playing = eng.play_time_manager.in_playing();
+    eng.with_seek_lock(|eng| {
         if was_playing {
             eng.play_time_manager.stop();
         }
-
         eng.pause_workers();
+
+        // 재생 위치 이동 + 타임라인 정렬
         eng.play_time_manager.seek_frames(pos_frames);
         eng.align_write_pos_to_transport();
-        eng.seek_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
-        eng.flush_flag
-            .store(true, std::sync::atomic::Ordering::Release);
+        eng.seek_epoch.fetch_add(1, Ordering::Release);
+
+        // RB1만 초기화/프리필
         eng.flush_ringbuffers();
         eng.budget.reset();
+        let _ = eng.prefill_rb1_blocking(PREFILL_ON_SEEK);
+    });
+
+    if was_playing {
+        eng.play_time_manager.start();
+        eng.wake_workers();
     }
-    let _ = eng.prefill_rb1_blocking(PREFILL_ON_SEEK);
-    let target_rb2 = PREFILL_RB2_FRAMES.min(RB2_FRAMES.saturating_sub(2048));
-    let _ = eng.prefill_rb2_blocking(target_rb2);
-    eng.flush_flag
-        .store(false, std::sync::atomic::Ordering::Release);
-    eng.wake_workers();
-    eng.play_time_manager.start();
+    eng.last_auto_rebuffer_at = Instant::now();
     true
+}
+
+#[no_mangle]
+pub extern "C" fn rust_render_interleaved(
+    engine: *mut Engine,
+    out_ptr: *mut f32,
+    frames: usize,
+    channels: i32,
+) -> usize {
+    if engine.is_null() || out_ptr.is_null() || frames == 0 || channels != 2 {
+        return 0;
+    }
+    let eng = unsafe { &mut *engine };
+    let ch = channels as usize;
+    if ch != 2 {
+        return 0;
+    }
+
+    let out: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(out_ptr, frames * ch) };
+    out.fill(0.0);
+
+    // 재생 중이 아니면 무음
+    if !eng.play_time_manager.in_playing() {
+        return frames;
+    }
+
+    // 리버퍼 중이면 이번 콜백은 무음으로 패스(클릭 방지)
+    let seek_arc = std::sync::Arc::clone(&eng.seek_lock);
+    let _guard = match seek_arc.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return frames;
+        }
+    };
+
+    // 파라미터 핸들
+    let params = &eng.real_time_params;
+
+    // 트랙들을 RB1(컨슈머: f32, L/R 인터리브드)에서 직접 mix
+    for (ti, cons_mx) in eng.consumers.iter().enumerate() {
+        // 파라 미스매치 가드
+        if ti >= params.volume.len() || ti >= params.pan.len() || ti >= params.muted.len() {
+            continue;
+        }
+
+        let muted = params.muted[ti].load(Ordering::Relaxed);
+        let vol = f32::from_bits(params.volume[ti].load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let pan = f32::from_bits(params.pan[ti].load(Ordering::Relaxed)).clamp(-1.0, 1.0);
+
+        if muted || vol == 0.0 {
+            // 이 트랙은 스킵 (버퍼는 남겨둠: 추후 재생 재개 시 팝)
+            continue;
+        }
+
+        // 간단한 equal-power가 아닌 linear-pan (요청 내용 유지)
+        let gl = vol * (1.0 - pan) * 0.5;
+        let gr = vol * (1.0 + pan) * 0.5;
+        let mut underrun_any = false;
+        if let Ok(mut cons) = cons_mx.lock() {
+            for f in 0..frames {
+                let l = match cons.pop() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        underrun_any = true;
+                        0.0
+                    }
+                };
+                let r = match cons.pop() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        underrun_any = true;
+                        0.0
+                    }
+                };
+
+                let i = f * 2;
+                unsafe {
+                    *out.get_unchecked_mut(i) += l * gl;
+                    *out.get_unchecked_mut(i + 1) += r * gr;
+                }
+            }
+        }
+        if underrun_any {
+            let (_, cv) = &*eng.thread_wait;
+            cv.notify_all();
+        }
+    }
+    // 트랜스포트 진행
+    eng.play_time_manager.advance_frames(frames as u64);
+    frames
 }
 
 #[inline]
@@ -270,11 +331,18 @@ pub fn fill_track_once(
     prod: &mut Producer<f32>,
     mut frames_need: usize,
     engine_sr: u32,
+    tempo_ratio: f32,
+    transport_pos: u64,
 ) -> Result<usize, String> {
     if frames_need == 0 || prod.is_full() {
         //할 일이 없음
         return Ok(0);
     }
+    // ★ write_pos가 재생위치보다 뒤로 가면 안 됨(역행 금지)
+    if tr.write_pos_frames < transport_pos {
+        tr.write_pos_frames = transport_pos;
+    }
+
     let mut pos = tr.write_pos_frames; //현재 쓰기 위치
     let mut produced_total = 0usize; //마지막에 사용량 저장을 위해
 
@@ -337,9 +405,9 @@ pub fn fill_track_once(
                 let d = dec.as_mut().unwrap();
 
                 // (2) 타임라인 pos → 소스 좌표(src_sr)로 매핑
-                let src_begin = (((pos.saturating_sub(clip.tl_start)) as f64) * (d.src_sr as f64)
-                    / (engine_sr as f64))
-                    .floor() as u64;
+                let rel = (pos.saturating_sub(clip.tl_start)) as f64;
+                let step = (d.src_sr as f64 / engine_sr as f64) * (tempo_ratio as f64);
+                let src_begin = (rel * step).floor() as u64;
 
                 // (3) 정확 시킹(필요 시)
                 if d.src_pos_samples != src_begin {
@@ -356,7 +424,7 @@ pub fn fill_track_once(
 
                 // (4) 디코드/리샘플
                 // 위에서 정확 시킹을 했으므로, decode 쪽에서 추가 스킵 없게 src_begin=0 전달
-                match decode_resample_into_ring(d, can_write, engine_sr, prod, 0) {
+                match decode_resample_into_ring(d, can_write, engine_sr, prod, 0, tempo_ratio) {
                     Ok(wrote) if wrote > 0 => {
                         produced_total += wrote;
                         pos += wrote as u64;
@@ -449,10 +517,11 @@ fn decode_resample_into_ring(
     engine_sr: u32,
     prod: &mut Producer<f32>,
     src_begin: u64,
+    tempo_ratio: f32,
 ) -> Result<usize, String> {
     let mut wrote = 0usize;
-    let step = (d.src_sr as f32) / (engine_sr as f32); //디코더에서 덜읽어야할 sr 수치
-
+    let mut step = (d.src_sr as f32) / (engine_sr as f32); //디코더에서 덜읽어야할 sr 수치
+    step *= tempo_ratio.clamp(0.25, 4.0);
     // 로컬 커서
     let mut ch: usize = refill_packet(d)?; // 첫 패킷 적재 & 채널수 확보
     if ch == 0 {

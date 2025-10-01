@@ -10,6 +10,8 @@ symphonia = { version = "0.5.4", features = ["wav"] }
 rtrb = "0.3.2"
 anyhow = "1.0.100"
 cpal = "0.16.0"
+windows = { version = "0.62.1", features = ["Win32_System_Threading"] }
+core_affinity = "0.8"
 
 [lib]
 crate-type = ["cdylib"]

@@ -28,11 +28,21 @@ AudioEngine::AudioEngine()
         return;
     }
     eng.reset(raw);
+
+    auto renderFromRust = [this](float* inter, size_t frames, int ch)->size_t { // 0. Lamda callback fun output
+        if (!eng) return 0;
+        return rust_render_interleaved(eng.get(), inter, frames, static_cast<uint32_t>(ch));
+        };
+    host_ = std::make_unique<AudioHostController>(renderFromRust); //create obj audio is Lama callback fun input
+    host_->onAboutToStart = [this] (double sr, int,int) { //output onAboutToStart
+        if (eng) rust_engine_set_sr(eng.get(), (uint32_t)sr);
+        };
+    host_->start(); //start Just App open one App delete is stop
 }
 
 AudioEngine::~AudioEngine()
 {
-
+    if (host_) host_->stop();
 }
 
 void AudioEngine::paint (juce::Graphics& g)
@@ -53,7 +63,7 @@ void AudioEngine::rust_string_delete(char* s)
 void AudioEngine::rust_start_sound(bool bstart)
 {
     if (bstart)
-    {
+    {  
         if (rust_sound_play(eng.get())) { DBG("[rust_sound_play] ok");}
         else { DBG("[rust_sound_play] error"); }
     }
@@ -62,6 +72,11 @@ void AudioEngine::rust_start_sound(bool bstart)
         if (rust_sound_stop(eng.get())) { DBG("[rust_sound_stop] ok"); }
         else { { DBG("[rust_sound_stop] error"); } }
     }
+}
+
+void AudioEngine::rust_eng_tick()
+{
+    rust_audio_tick(eng.get());
 }
 
 
