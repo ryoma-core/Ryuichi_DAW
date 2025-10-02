@@ -5,6 +5,7 @@
 MainComponent::MainComponent()
 {
 #pragma region Setting
+    formatManager.addDefaultFormats();
     setSize (1200, 600);
     setFramesPerSecond(60);
     addAndMakeVisible(soundBrowser);
@@ -23,6 +24,27 @@ MainComponent::MainComponent()
         fileDragIcon = juce::ImageFileFormat::loadFrom(fileDragFile);
     }
     addMouseListener(this, true);
+
+    juce::File vstR(DefaultVSTReverb);
+    if (vstR.existsAsFile()) {
+        const double sr = static_cast<double>(audioEngine->rust_get_out_sr());
+        const int    bs = static_cast<int>(audioEngine->rust_get_out_bs());
+        DefaultVST3FromFile(reverb,vstR.getFullPathName(), sr, bs);
+    }
+    mixers.trackMixer_0->reverbToggleButton.onClick = [this]() {
+        if (!(reverb && reverb->instance)) { DBG("reverb not ready"); return; }
+        bool onOff = mixers.trackMixer_0->reverbToggleButton.getToggleState();
+        reverb->instance->suspendProcessing(!onOff);
+        if (onOff) {
+            if (auto* bp = reverb->instance->getBypassParameter())
+                bp->setValueNotifyingHost(0.0f); // 1.0 = Bypass 활성(효과 OFF)
+        }
+        else {
+            if (auto* bp = reverb->instance->getBypassParameter())
+                bp->setValueNotifyingHost(1.0f); // 1.0 = Bypass 활성(효과 OFF)
+        }
+        };
+
 #pragma endregion
 #pragma region FileDrepped callBack
     mainTrack.onDropIntoSubTrack = [this](int track, const juce::File& file, float laneX)
@@ -247,7 +269,6 @@ MainComponent::MainComponent()
         };
 #pragma endregion
 #pragma region VST3
-    formatManager.addDefaultFormats();
     soundBrowser.sourcePanel.vstFile->vstPanel.get()->onDoubleClick = [this](const juce::File& f) {
         
         const double sr = static_cast<double>(audioEngine->rust_get_out_sr());
@@ -621,6 +642,61 @@ bool MainComponent::loadVST3FromFile(const juce::String& path, double sampleRate
                 DBG("Loaded: " + it->instance->getName());
             });
 
+        return true;
+    }
+    DBG("Not a VST3: " + path);
+    return false;
+}
+
+bool MainComponent::DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, const juce::String& path, double sampleRate, int blockSize)
+{
+    for (auto* fmt : formatManager.getFormats()) //Pluginhost Check My project just one Pluginhost (VST3)
+    {
+        if (!fmt->fileMightContainThisPluginType(path)) continue; // this is click file in the pluginhost formats same check
+
+        juce::OwnedArray<juce::PluginDescription> types; //PluginDescription
+        fmt->findAllTypesForFile(types, path);
+        if (types.isEmpty()) continue;                 //find?
+
+        fmt->createPluginInstanceAsync(*types[0], sampleRate, blockSize, //find just 1 file [0]  sr and bs is sound play sr and plugin input data size
+            [this, &plugin, path, sampleRate, blockSize](std::unique_ptr<juce::AudioPluginInstance> inst, //Lambda
+                const juce::String& err)
+            {
+                if (!inst) { DBG("VST load failed: " + err); return; } //inst error
+
+                // 1) 기존 슬롯 깨끗이 제거(그래프에서 먼저 빼고 리소스 해제)
+                if (plugin && plugin->instance)
+                {
+                    if (audioEngine && audioEngine->host_) {
+                        audioEngine->host_->removePlugin(plugin->instance.get());
+                        plugin->instance->suspendProcessing(true);
+                        plugin->instance->releaseResources();
+                        plugin->window.reset();
+                        plugin.reset();
+                    }
+                }
+
+           
+
+                // 3) 슬롯에 소유권 이전
+                plugin.emplace();
+                plugin->instance = std::move(inst);
+
+                // 2) 새 인스턴스 준비
+                plugin->instance->prepareToPlay(sampleRate, blockSize);
+                
+                if (auto* bp = plugin->instance->getBypassParameter())
+                    bp->setValueNotifyingHost(1.0f); // 1.0 = Bypass 활성(효과 OFF)
+
+                // 4) 시작은 OFF(진짜 멈춤 시그널)
+                plugin->instance->suspendProcessing(true);
+
+                // 호스트 체인에 등록 (소유권은 그대로 여기 유지)
+                if (audioEngine && audioEngine->host_)
+                    audioEngine->host_->addPlugin(plugin->instance.get());
+
+                DBG("Loaded: " + plugin->instance->getName());
+            });
         return true;
     }
     DBG("Not a VST3: " + path);

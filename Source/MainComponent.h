@@ -14,11 +14,16 @@
 #include "VSTWindows.h"
 
 #define FILEDRAG_DIR_PATH (Path::assetsDir().getChildFile("UI_Image").getChildFile("FileDrag.png"))
+#define DefaultVSTReverb (Path::assetsDir().getChildFile("Default_VST").getChildFile("RyuichiReverb.vst3"))
 //"C:/Ryuichi/UI_Image/FileDrag.png"
 struct PluginSlot {
     std::unique_ptr<juce::AudioPluginInstance> instance;
     std::unique_ptr<PluginWindow>              window;
     juce::String                               path;
+};
+struct DefaultPlugin {
+    std::unique_ptr<juce::AudioPluginInstance> instance;
+    std::unique_ptr<PluginWindow>              window;
 };
 struct AudioShared
 {
@@ -26,7 +31,7 @@ struct AudioShared
     juce::AudioThumbnailCache  cache{ 4096 };
     AudioShared() { fm.registerBasicFormats(); }
 };
-class MainComponent  : public juce::AnimatedAppComponent, public juce::DragAndDropContainer
+class MainComponent : public juce::AnimatedAppComponent, public juce::DragAndDropContainer
 {
 public:
     //==============================================================================
@@ -34,7 +39,7 @@ public:
     ~MainComponent() override;
 
     //==============================================================================
-    void paint (juce::Graphics&) override;
+    void paint(juce::Graphics&) override;
     void resized() override;
     void update() override;
     void mouseDrag(const juce::MouseEvent& e) override;
@@ -65,9 +70,9 @@ private:
     AudioShared audioShared;
 
     juce::OwnedArray<ClipData> clips[4];
-    ClipData* selectedClip = nullptr; 
-    int       selectedTrack = -1;      
-    bool      isDraggingClip = false; 
+    ClipData* selectedClip = nullptr;
+    int       selectedTrack = -1;
+    bool      isDraggingClip = false;
     double    dragGrabOffsetS = 0.0;
 
     int       dragOrigTrack = -1;       // 드래그 시작 시 원본 위치
@@ -87,8 +92,11 @@ private:
     juce::AudioPluginFormatManager formatManager;
     std::unique_ptr<juce::AudioPluginInstance> plugin;
     std::list<PluginSlot> pluginSlots;
+    std::optional<DefaultPlugin> reverb;
+    std::optional<DefaultPlugin> delay;
 
-    bool loadVST3FromFile(const juce::String& f, double sampleRate, int blockSize);
+    bool loadVST3FromFile(const juce::String& path, double sampleRate, int blockSize);
+    bool DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, const juce::String& path, double sampleRate, int blockSize);
 #pragma endregion 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
