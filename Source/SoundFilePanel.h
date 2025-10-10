@@ -20,6 +20,12 @@ class SoundFilePanel  : public juce::ListBoxModel
 public:
     SoundFilePanel();
     ~SoundFilePanel() override;
+    std::function<void(const juce::File&, int, const juce::MouseEvent&)> onItemClicked;
+    void listBoxItemClicked(int row, const juce::MouseEvent& e) override
+    {
+        if (juce::isPositiveAndBelow(row, items.size()) && onItemClicked)
+            onItemClicked(items[(size_t)row], row, e);
+    }
     int getNumRows()override
     {
         DBG("getNumRows: " << items.size());

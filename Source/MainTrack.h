@@ -25,6 +25,7 @@ public:
     ~MainTrack() override;
     std::function<void(int trackIndex, const juce::File& file, float laneLocalX)>onDropIntoSubTrack;
     std::function<void(int)> handleMenuSelection;
+    std::function<void()> onExportWav;
     void mouseDown(const juce::MouseEvent& event) override;
     void paint (juce::Graphics&) override;
     void resized() override;

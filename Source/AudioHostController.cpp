@@ -52,20 +52,26 @@ void AudioHostController::audioDeviceAboutToStart(juce::AudioIODevice* device)
     if (onAboutToStart) onAboutToStart(sampleRate_, blockSize_, outCh_);
 
     const juce::SpinLock::ScopedLockType sl(plugLock_);
-    for (auto& p : plugs_)
-    {
-        const auto set = (outCh_ == 1) ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
-        juce::AudioProcessor::BusesLayout layout{ set, set }; //inLayout , outLayout
+    if (bypass_.size() < plugs_.size())
+        bypass_.resize(plugs_.size(), 0u);
+    else if (bypass_.size() > plugs_.size())
+        bypass_.resize(plugs_.size());
+    const auto wanted = (outCh_ == 1) ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
+    const juce::AudioProcessor::BusesLayout desired{ wanted, wanted };
 
-        if (!p->setBusesLayout(layout))
-        {
-            // stereo만 강제 시도
-            juce::AudioProcessor::BusesLayout stereo{ juce::AudioChannelSet::stereo(),
-                                                      juce::AudioChannelSet::stereo() };
-            p->setBusesLayout(stereo); // 이것도 실패할 수 있음
-        }
+    for (size_t i = 0; i < plugs_.size(); ++i)
+    {
+        auto* p = plugs_[i];
+        if (!p) continue;
+
+        // 레이아웃 같으면 안 건드림
+        if (p->getBusesLayout() != desired)
+            (void)p->setBusesLayout(desired);
 
         p->prepareToPlay(sampleRate_, blockSize_);
+
+        const bool bp = (i < bypass_.size()) ? (bypass_[i] != 0u) : false;
+        p->suspendProcessing(bp);
     }
 }
 
@@ -142,20 +148,28 @@ void AudioHostController::audioDeviceIOCallbackWithContext(
     midi_.clear();
     {
         const juce::SpinLock::ScopedLockType sl(plugLock_);
-        for (auto& p : plugs_) {
-            const int needIn = p->getTotalNumInputChannels(); //getInChannels
-            const int needOut = p->getTotalNumOutputChannels(); //getOutChannels
-            const int needCh = std::max({ needIn, needOut, numOutputChannels }); //maxer plugin Channels
-            if (procBuf_.getNumChannels() < needCh) //resetting procBuf_ Channels
-                procBuf_.setSize(needCh, numSamples, false, false, true); 
+        for (size_t i = 0; i < plugs_.size(); ++i)
+        {
+            auto* p = plugs_[i];
+            if (!p) continue;
 
-            p->processBlock(procBuf_, midi_); //in VST the proceBuf
+            const int needIn = p->getTotalNumInputChannels();
+            const int needOut = p->getTotalNumOutputChannels();
+            const int needCh = std::max({ needIn, needOut, numOutputChannels });
+
+            if (procBuf_.getNumChannels() < needCh)
+                procBuf_.setSize(needCh, numSamples, false, false, true);
+
+            const bool bp = (i < bypass_.size()) ? (bypass_[i] != 0u) : false;
+            if (bp) continue;
+
+            p->processBlock(procBuf_, midi_);
         }
     }
     copyBufferToDeviceOutputs(procBuf_, outputChannelData, numOutputChannels, numSamples); //change procBuf_ is callback outdata
 }
 
-void AudioHostController::addPlugin(juce::AudioProcessor* p)
+void AudioHostController::addPlugin(juce::AudioProcessor* p, bool initiallyBypassed)
 {
     if (!p) return;
     const juce::SpinLock::ScopedLockType sl(plugLock_);
@@ -167,9 +181,10 @@ void AudioHostController::addPlugin(juce::AudioProcessor* p)
         juce::AudioProcessor::BusesLayout layout{ set, set };
         (void)p->setBusesLayout(layout); // 실패해도 일단 진행 (플러그인에 따라 다름)
         p->prepareToPlay(sampleRate_, blockSize_);
-        p->suspendProcessing(false);
+        p->suspendProcessing(initiallyBypassed);
     }
     plugs_.push_back(p);
+    bypass_.push_back(initiallyBypassed ? 1 : 0);
 }
 
 void AudioHostController::removePlugin(juce::AudioProcessor* p)
@@ -177,11 +192,96 @@ void AudioHostController::removePlugin(juce::AudioProcessor* p)
     const juce::SpinLock::ScopedLockType sl(plugLock_);
     auto it = std::find(plugs_.begin(), plugs_.end(), p);
     if (it != plugs_.end())
+    {
+        const size_t idx = (size_t)std::distance(plugs_.begin(), it);
         plugs_.erase(it);
+        if (idx < bypass_.size()) bypass_.erase(bypass_.begin() + (ptrdiff_t)idx);
+    }
 }
 
 void AudioHostController::clearPlugins()
 {
     const juce::SpinLock::ScopedLockType sl(plugLock_);
     plugs_.clear(); // 소유권 없으니 release는 MainComponent에서 함
+    bypass_.clear();
+}
+
+void AudioHostController::setBypassed(juce::AudioProcessor* p, bool shouldBypass)
+{
+    const juce::SpinLock::ScopedLockType sl(plugLock_);
+    auto it = std::find(plugs_.begin(), plugs_.end(), p);
+    if (it == plugs_.end()) return;
+    const size_t idx = (size_t)std::distance(plugs_.begin(), it);
+    if (idx >= bypass_.size()) return;
+
+    bypass_[idx] = shouldBypass ? 1u : 0u;
+
+    // CPU 절약용으로 실제 suspend도 동기화
+    p->suspendProcessing(shouldBypass);
+}
+
+bool AudioHostController::isBypassed(juce::AudioProcessor* p) const
+{
+    const juce::SpinLock::ScopedLockType sl(plugLock_);
+    auto it = std::find(plugs_.begin(), plugs_.end(), p);
+    if (it == plugs_.end()) return true;
+    const size_t idx = (size_t)std::distance(plugs_.begin(), it);
+    if (idx >= bypass_.size()) return true;
+    return bypass_[idx] != 0u;
+}
+
+bool AudioHostController::prepareForOffline(double sampleRate, int blockSize)
+{
+    sampleRate_ = sampleRate;
+    blockSize_ = blockSize;
+    outCh_ = 2; // 오프라인은 스테레오로 고정
+
+    if (procBuf_.getNumChannels() < outCh_ || procBuf_.getNumSamples() < blockSize_)
+        procBuf_.setSize(outCh_, blockSize_, false, false, true);
+
+    {
+        const juce::SpinLock::ScopedLockType sl(plugLock_);
+        auto set = juce::AudioChannelSet::stereo();
+        juce::AudioProcessor::BusesLayout layout{ set, set };
+
+        if (bypass_.size() < plugs_.size())      bypass_.resize(plugs_.size(), 0u);
+        else if (bypass_.size() > plugs_.size()) bypass_.resize(plugs_.size());
+
+        for (auto* p : plugs_)
+        {
+            if (!p) continue;
+            (void)p->setBusesLayout(layout); // 실패해도 진행
+            p->prepareToPlay(sampleRate_, blockSize_);
+            // bypass 상태는 기존 bypass_ 플래그로 유지; 실사용 시 processBlock만 skip
+        }
+    }
+    return true;
+}
+
+void AudioHostController::processChainOffline(juce::AudioBuffer<float>& buffer,
+    juce::MidiBuffer& midi)
+{
+    const juce::SpinLock::ScopedLockType sl(plugLock_);
+    for (size_t i = 0; i < plugs_.size(); ++i)
+    {
+        auto* p = plugs_[i];
+        if (!p) continue;
+        const bool bp = (i < bypass_.size()) ? (bypass_[i] != 0u) : false;
+        if (bp) continue; // 바이패스면 스킵
+        p->processBlock(buffer, midi);
+    }
+}
+
+void AudioHostController::releaseOffline()
+{
+    const juce::SpinLock::ScopedLockType sl(plugLock_);
+    for (auto* p : plugs_) if (p) p->releaseResources();
+}
+
+int AudioHostController::getTotalLatencySamples() const
+{
+    const juce::SpinLock::ScopedLockType sl(plugLock_);
+    int sum = 0;
+    for (auto* p : plugs_) if (p) sum += p->getLatencySamples();
+    return sum;
 }

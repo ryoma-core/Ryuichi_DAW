@@ -94,6 +94,7 @@ private:
     std::list<PluginSlot> pluginSlots;
     std::optional<DefaultPlugin> reverb;
     std::optional<DefaultPlugin> delay;
+    bool reverbEnabled, delayEnabled = false;
 
     bool loadVST3FromFile(const juce::String& path, double sampleRate, int blockSize);
     bool DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, const juce::String& path, double sampleRate, int blockSize);

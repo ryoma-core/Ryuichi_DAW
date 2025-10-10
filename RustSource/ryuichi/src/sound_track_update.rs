@@ -324,3 +324,19 @@ pub extern "C" fn rust_audio_tick(engine: *mut Engine) {
     //     return;
     // }
 }
+
+#[no_mangle]
+pub extern "C" fn rust_project_length_frames(engine: *mut Engine) -> u64 {
+    if engine.is_null() {
+        return 0;
+    }
+    let eng = unsafe { &mut *engine };
+    eng.project_end_frames()
+}
+
+#[no_mangle]
+pub extern "C" fn rust_project_length_seconds(engine: *const Engine) -> f64 {
+    if engine.is_null() { return 0.0; }
+    let eng = unsafe { &*engine };
+    eng.project_length_seconds()
+}

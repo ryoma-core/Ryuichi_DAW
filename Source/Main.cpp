@@ -30,17 +30,6 @@ public:
 
     void shutdown() override
     {
-        juce::File waveformDir("C:/Ryuichi/WaveformImg");
-
-        if (waveformDir.exists() && waveformDir.isDirectory())
-        {
-            auto files = waveformDir.findChildFiles(juce::File::findFiles, false);
-
-            for (auto& file : files)
-            {
-                file.deleteFile(); // 파일 하나씩 삭제
-            }
-        }
         mainWindow = nullptr; // (deletes our window)
     }
 

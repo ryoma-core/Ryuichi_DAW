@@ -133,25 +133,22 @@ bool MainTrack::isInterestedInDragSource(const SourceDetails& dragSourceDetails)
 
 void MainTrack::mouseDown(const juce::MouseEvent& event)
 {
-    if (event.mods.isRightButtonDown())
+    if (event.mods.isPopupMenu()) // 맥 ctrl+클릭도 지원
     {
         juce::PopupMenu menu;
-        menu.addItem(1, "1 Track Smple Delete");
-        menu.addItem(2, "2 Track Smple Delete");
-        menu.addItem(3, "3 Track Smple Delete");
-        menu.addItem(4, "4 Track Smple Delete");
+        menu.addItem(1, "export Wav");
 
-        juce::Rectangle<int> menuArea(
-            event.getScreenPosition().toInt().x,
-            event.getScreenPosition().toInt().y,
-            1, 1);
+        auto screenPt = event.getScreenPosition();
+        juce::Rectangle<int> anchor(screenPt.x, screenPt.y, 1, 1);
 
-        menu.showMenuAsync(juce::PopupMenu::Options()
-            .withTargetComponent(this)
-            .withTargetScreenArea(menuArea)
-            .withMinimumWidth(150),
-            [this](int selectedId) {
-                handleMenuSelection(selectedId);
-            });
+        menu.showMenuAsync(
+            juce::PopupMenu::Options()
+            .withTargetScreenArea(anchor),   // **이것만** 쓰기!
+            [this](int choice)
+            {
+                if (choice == 1 && onExportWav)
+                    onExportWav();
+            }
+        );
     }
 }

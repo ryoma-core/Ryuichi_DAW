@@ -10,6 +10,10 @@ mod logging;
 pub use logging::rlog_send;
 pub use logging::*;
 
+use std::ffi::CStr;
+use std::os::raw::c_char;
+
+use crossbeam_utils::atomic::AtomicCell;
 use std::collections::BTreeMap;
 use std::sync::Condvar;
 use std::time::{Duration, Instant};
@@ -242,6 +246,16 @@ impl Budget {
     }
 }
 
+pub struct Sample {
+    // interleaved L R L R … 길이 = 48_000 * 2 (1초, 48kHz, 스테레오)
+    pub data: Arc<[f32]>,
+    pub nframes: u32, // 48_000
+}
+struct SfxState {
+    sample: Arc<Sample>,
+    frame: usize,           // 현재 재생 위치 0..nframes
+}
+
 pub struct Engine {
     producers: Arc<Vec<Mutex<Producer<f32>>>>,
     consumers: Arc<Vec<Mutex<Consumer<f32>>>>,
@@ -280,6 +294,8 @@ pub struct Engine {
     precharge_req: Arc<AtomicBool>,
     last_swap_epoch: Arc<AtomicU64>, // 스왑 카운터
     swap_epoch_at_call: u64,         // (렌더 스냅샷)
+    pad_sample: AtomicCell<Option<Arc<Sample>>>,
+    sfx_state: Mutex<Option<SfxState>>, 
 }
 impl Engine {
     fn new(mut tk: Vec<TrackConfig>) -> Self {
@@ -355,6 +371,7 @@ impl Engine {
         let rb2_level_sb = Arc::new((0..ntracks).map(|_| AtomicUsize::new(0)).collect());
         let precharge_req = Arc::new(AtomicBool::new(false));
         let seek_lock = Arc::new(Mutex::new(()));
+        let (sfx_tx, sfx_rx) = RingBuffer::<[f32; 2]>::new(48_000 * 2);
 
         // 4) 디코딩 스레드 포인터 클론
         let decoding_workers: usize = 6;
@@ -551,6 +568,8 @@ impl Engine {
             precharge_req: precharge_req,
             last_swap_epoch: Arc::new(AtomicU64::new(0)),
             swap_epoch_at_call: 0,
+            pad_sample: AtomicCell::new(None),
+            sfx_state: Mutex::new(None),
         };
     }
 
@@ -1370,6 +1389,132 @@ impl Engine {
         d.src_pos_samples = approx_src_samples;
         Ok(())
     }
+
+    fn decode_head_1s_to_48k2ch_interleaved_arc(&self, path: &str) -> Option<Arc<[f32]>> {
+        const OUT_SR: u32 = 48_000;
+        const OUT_FRAMES: usize = 48_000;
+        const OUT_SAMPLES: usize = OUT_FRAMES * 2;
+
+        use std::fs::File;
+        use std::path::Path;
+        use symphonia::core::{
+            audio::{SampleBuffer, SignalSpec},
+            codecs::DecoderOptions,
+            formats::FormatOptions,
+            io::MediaSourceStream,
+            meta::MetadataOptions,
+            probe::Hint,
+        };
+        use symphonia::default::{get_codecs, get_probe};
+
+        // 파일 열기 + 포맷/디코더 준비
+        let file = File::open(Path::new(path)).ok()?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let probed = get_probe()
+            .format(
+                &Hint::new(),
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .ok()?;
+        let mut format = probed.format;
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.channels.is_some())?;
+        let src_sr = track.codec_params.sample_rate?;
+        let src_ch = track.codec_params.channels?.count().max(1);
+        let mut decoder = get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .ok()?;
+
+        // 디코드 버퍼
+        let mut sample_buf = SampleBuffer::<f32>::new(
+            0,
+            SignalSpec {
+                rate: src_sr,
+                channels: track.codec_params.channels?,
+            },
+        );
+
+        // 출력 버퍼 준비 (무음으로 채워 시작)
+        let mut out: Vec<f32> = vec![0.0; OUT_SAMPLES];
+
+        // 리샘플링 스텝(선형 보간 없이 최근접 샘플 픽업: 빠르고 클릭 없음)
+        let step = src_sr as f64 / OUT_SR as f64;
+
+        let mut src_samples: Vec<[f32; 2]> = Vec::new();
+        src_samples.reserve((OUT_FRAMES as f64 * step + 4.0) as usize);
+
+        // 소스에서 최소 1초 분량 만큼 뽑기
+        'outer: loop {
+            let pkt = match format.next_packet() {
+                Ok(p) => p,
+                Err(_) => break, // EOF
+            };
+            let decoded = match decoder.decode(&pkt) {
+                Ok(x) => x,
+                Err(_) => break, // 디코드 에러 -> 포기
+            };
+            if sample_buf.capacity() < decoded.capacity() {
+                sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+            }
+            sample_buf.copy_interleaved_ref(decoded);
+            let s = sample_buf.samples();
+
+            // 채널 매핑: mono면 L=R, 그 외엔 앞 2채널만 사용
+            let ch = src_ch.min(2);
+            let mut i = 0;
+            while i + ch <= s.len() {
+                let l = s[i];
+                let r = if ch >= 2 { s[i + 1] } else { l };
+                src_samples.push([l, r]);
+                i += ch;
+                if src_samples.len() >= ((OUT_FRAMES as f64 * step).ceil() as usize + 2) {
+                    break 'outer;
+                }
+            }
+        }
+
+        if src_samples.is_empty() {
+            return None;
+        }
+
+        // 최근접 샘플 픽업으로 48k/2ch 1초 채우기
+        for n in 0..OUT_FRAMES {
+            let pos = (n as f64 * step).floor() as usize;
+            let p = src_samples.get(pos).or_else(|| src_samples.last());
+            if let Some([l, r]) = p {
+                out[n * 2] = *l;
+                out[n * 2 + 1] = *r;
+            } else {
+                break;
+            }
+        }
+
+        Some(Arc::from(out))
+    }
+    
+    pub fn project_end_frames(&self) -> u64 {
+        let mut end : u64 = 0;
+        for tr_mx in self.track_run_time.iter() {
+            if let Ok(tr) = tr_mx.lock() {
+                for c in tr.clips.values() {
+                    let e = c.tl_start.saturating_add(c.tl_len);
+                    if e > end {
+                        end = e;
+                    }
+                }
+            }
+        }
+        end
+    }
+    pub fn project_length_seconds(&self) -> f64 {
+        let sr = self.play_time_manager.sr().max(1);
+        self.project_end_frames() as f64 / sr as f64
+    }
 }
 
 impl Drop for Engine {
@@ -1437,4 +1582,88 @@ pub extern "C" fn rust_audio_engine_free(eng: *mut Engine) {
     unsafe {
         drop(Box::from_raw(eng));
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_request_load_single_sample(
+    engine: *mut Engine,
+    path: *const c_char,
+) -> bool {
+    if engine.is_null() || path.is_null() {
+        return false;
+    }
+    let eng = unsafe { &mut *engine };
+
+    // C 문자열 → Rust &str
+    let cstr = unsafe { CStr::from_ptr(path) };
+    let path_str = match cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    if let Some(buf) = eng.decode_head_1s_to_48k2ch_interleaved_arc(path_str) {
+        // Sample에는 sr이 아니라 nframes가 있음
+        let s = Arc::new(Sample {
+            data: buf,
+            nframes: 48_000,
+        });
+        eng.pad_sample.store(Some(s));
+        true
+    } else {
+        false
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_audio_start_output(engine: *mut Engine) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+    let eng = unsafe { &mut *engine };
+
+    // 이미 시작했다면 패스
+    if eng.sound_output.is_some() {
+        eng.play_time_manager.start();
+        eng.wake_workers();
+        return true;
+    }
+
+    match eng.start_output_from_ringbuffer() {
+        Ok(stream) => {
+            eng.sound_output = Some(stream);
+            eng.play_time_manager.start();
+            eng.wake_workers();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_pad_note_on(engine: *mut Engine) -> bool {
+    if engine.is_null() { return false; }
+    let eng = unsafe { &mut *engine };
+
+    // pad_sample 스냅샷(Arc 복사만)
+    let Some(sample_arc) = eng.pad_sample.take() else { return false; };
+    let sample = sample_arc.clone();
+    eng.pad_sample.store(Some(sample_arc)); // 재사용 가능하게 되돌리기
+
+    if let Ok(mut st) = eng.sfx_state.lock() {
+        // 리트리거: 처음부터 다시
+        *st = Some(SfxState { sample, frame: 0 });
+        true
+    } else {
+        false
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_pad_note_off(engine: *mut Engine) -> bool {
+    if engine.is_null() { return false; }
+    let eng = unsafe { &mut *engine };
+    if let Ok(mut st) = eng.sfx_state.lock() {
+        *st = None;
+        true
+    } else { false }
 }

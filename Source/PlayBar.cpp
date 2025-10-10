@@ -56,9 +56,24 @@ PlayBar::PlayBar()
         stopToggleButton.setBounds(50, 40, 50, 40);
     }
 #pragma endregion
+#pragma region ReverbButton
+    juce::File reverbOnButtonFile(REVERB_ON_DIR_PATH);
+    juce::File reverbOffButtonFile(REVERB_OFF_DIR_PATH);
+    if (reverbOnButtonFile.existsAsFile() && reverbOffButtonFile.existsAsFile())
+    {
+        juce::Image reverbOnImg = juce::ImageFileFormat::loadFrom(reverbOnButtonFile);
+        juce::Image reverbOffImg = juce::ImageFileFormat::loadFrom(reverbOffButtonFile);
+
+        reverbToggleButton.setImages(reverbOnImg, reverbOffImg);
+        addAndMakeVisible(reverbToggleButton);
+        reverbToggleButton.setBounds(95, 40, 50, 40);
+    }
+#pragma endregion
     addAndMakeVisible(bpm);
     addAndMakeVisible(bpmTextImage);
     bpmTextImage.toFront(true);
+
+
 }
 
 PlayBar::~PlayBar()
@@ -73,7 +88,7 @@ void PlayBar::paint (juce::Graphics& g)
 void PlayBar::resized()
 {
     titleImage.setBounds(0, 0, 300, 40);
-    bpm.setBounds(100, 40, 200, 40);
-    bpmTextImage.setBounds(100, 40, 40, 40);
+    bpm.setBounds(140, 40, 200, 40);
+    bpmTextImage.setBounds(140, 40, 40, 40);
 }
 

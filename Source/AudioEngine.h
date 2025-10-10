@@ -48,6 +48,13 @@ extern "C"
     bool rust_sound_seek(Engine* engine, uint64_t s);
     uint32_t rust_audio_params_out_sr(Engine* engine);
     uint32_t rust_audio_params_out_bs(Engine* engine);
+
+    bool rust_request_load_single_sample(Engine* engine, const char* path);
+    bool rust_pad_note_on(Engine* engine);
+    bool rust_pad_note_off(Engine* engine);
+
+    uint64_t rust_project_length_frames(Engine* engine);
+    double rust_project_length_seconds(Engine* engine);
 }
 struct EngineDeleter {
     void operator()(Engine* e) const noexcept {
@@ -87,7 +94,10 @@ public:
     bool rust_set_play_time(uint64_t s);
     uint32_t rust_get_out_sr();
     uint32_t rust_get_out_bs();
-
+    void rust_sample_add(const char* path);
+    void rust_sample_play();
+    void rust_sample_stop();
+    void rust_save_wav();
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_0;
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_1;
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_2;

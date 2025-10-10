@@ -20,6 +20,7 @@ pub use std::{
     },
     thread::{self, JoinHandle},
 };
+
 pub use symphonia::core::{
     audio::{SampleBuffer, SignalSpec},
     codecs::DecoderOptions,
@@ -128,6 +129,40 @@ pub extern "C" fn rust_render_interleaved(
 
     let out: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(out_ptr, frames * ch) };
     out.fill(0.0);
+
+    if let Ok(mut st) = eng.sfx_state.lock() {
+        if let Some(sfx) = st.as_mut() {
+            let total = sfx.sample.nframes as usize;
+            let start = sfx.frame;
+            if start < total {
+                let to_copy = (total - start).min(frames);
+                let src = &sfx.sample.data[start * 2..(start + to_copy) * 2];
+
+                // 간단 페이드인(클릭 방지). 필요없으면 통째로 copy_from_slice만 쓰세요.
+                const FADE: usize = 64;
+                if start == 0 {
+                    let n = to_copy.min(FADE);
+                    for i in 0..n {
+                        let g = i as f32 / FADE as f32;
+                        out[i * 2] = (src[i * 2] * g).clamp(-1.0, 1.0);
+                        out[i * 2 + 1] = (src[i * 2 + 1] * g).clamp(-1.0, 1.0);
+                    }
+                    if to_copy > n {
+                        out[n * 2..to_copy * 2].copy_from_slice(&src[n * 2..to_copy * 2]);
+                    }
+                } else {
+                    out[..to_copy * 2].copy_from_slice(src);
+                }
+
+                sfx.frame += to_copy;
+                if sfx.frame >= total {
+                    *st = None; // 끝났으면 소거
+                }
+            } else {
+                *st = None;
+            }
+        }
+    }
 
     // 재생 중이 아니면 무음
     if !eng.play_time_manager.in_playing() {

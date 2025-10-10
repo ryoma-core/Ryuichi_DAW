@@ -14,8 +14,8 @@
 struct ClipData {
     std::unique_ptr<juce::AudioThumbnail> thumb;
     juce::File file;
-    uint64_t startS = 0;   // ½ÃÀÛ(»ùÇÃ)
-    uint64_t lenS = 0;   // ±æÀÌ(»ùÇÃ)
+    uint64_t startS = 0;   // Â½ÃƒÃ€Ã›(Â»Ã¹Ã‡Ãƒ)
+    uint64_t lenS = 0;   // Â±Ã¦Ã€ÃŒ(Â»Ã¹Ã‡Ãƒ)
 
     ClipData(juce::AudioFormatManager& fm,
         juce::AudioThumbnailCache& cache,

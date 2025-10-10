@@ -155,3 +155,143 @@ uint32_t AudioEngine::rust_get_out_bs()
 {
     return rust_audio_params_out_bs(eng.get());
 }
+
+void AudioEngine::rust_sample_add(const char* path)
+{
+    if (rust_request_load_single_sample(eng.get(), path))
+    {
+        DBG("RUST_Sample_ADD_OK");
+    }
+}
+
+void AudioEngine::rust_sample_play()
+{
+    if (rust_pad_note_on(eng.get()))
+    {
+        DBG("RUST_Sample_PLAY");
+    }
+}
+
+void AudioEngine::rust_sample_stop()
+{
+    if (rust_pad_note_off(eng.get()))
+    {
+        DBG("RUST_Sample_STOP");
+    }
+}
+
+void AudioEngine::rust_save_wav()
+{
+    // 1) 출력 파일: 바탕화면/Ryuicni.wav
+    juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+        .getChildFile("Ryuicni.wav");
+    outFile.deleteFile();
+
+    // 2) 상태 백업 + 장치 정지
+    const bool     wasPlaying = rust_get_is_playing();
+    const uint64_t prevPos = rust_get_pos();
+    if (host_) host_->stop();
+
+    // 3) 렌더 파라미터
+    const uint32_t sr = juce::jmax<uint32_t>(44100u, rust_get_out_sr());
+    const uint32_t block = juce::jmax<uint32_t>(256u, rust_get_out_bs());
+    const uint64_t songFrames = rust_project_length_frames(eng.get());
+
+    // 4) 오프라인 준비 (플러그인 체인)
+    if (!host_ || !host_->prepareForOffline((double)sr, (int)block)) {
+        DBG("[Export] offline prepare failed");
+        if (host_) host_->start();
+        return;
+    }
+    const int latency = juce::jmax(0, host_->getTotalLatencySamples());
+    const uint64_t tailFrames = (uint64_t)latency; // 체인 드레인 보장 (필요시 추가 tailSec 더해도 됨)
+
+    // 5) 엔진 정렬
+    rust_engine_set_sr(eng.get(), sr);
+    rust_set_play_time(0);
+    rust_start_sound(true); // 워커가 RB 채우게
+
+    // 6) WAV writer
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> fos(outFile.createOutputStream());
+    if (!fos || !fos->openedOk()) {
+        DBG("[Export] cannot open: " + outFile.getFullPathName());
+        rust_start_sound(false);
+        rust_set_play_time(prevPos);
+        host_->releaseOffline();
+        if (wasPlaying) rust_start_sound(true);
+        if (host_) host_->start();
+        return;
+    }
+    std::unique_ptr<juce::AudioFormatWriter> writer(
+        wav.createWriterFor(fos.release(), (double)sr, 2, 24, {}, 0));
+    if (!writer) {
+        DBG("[Export] createWriterFor failed");
+        rust_start_sound(false);
+        rust_set_play_time(prevPos);
+        host_->releaseOffline();
+        if (wasPlaying) rust_start_sound(true);
+        if (host_) host_->start();
+        return;
+    }
+
+    // 7) 버퍼들
+    std::vector<float> inter(block * 2, 0.0f);       // 엔진 인터리브드
+    juce::AudioBuffer<float> buf(2, (int)block);     // 플러그인 입출력
+    juce::MidiBuffer midi;
+
+    // 8) 레턴시 헤드 스킵 상태
+    int headLeft = latency;
+
+    // 9) 렌더 루프: 노래 전체 + 레턴시 테일
+    uint64_t rendered = 0;
+    const uint64_t targetFrames = songFrames + tailFrames;
+
+    while (rendered < targetFrames)
+    {
+        const uint32_t todo = (uint32_t)juce::jmin<uint64_t>(block, targetFrames - rendered);
+
+        // 9-1) 엔진에서 인터리브드 뽑기
+        size_t got = rust_render_interleaved(eng.get(), inter.data(), (size_t)todo, 2);
+        if (got == 0) { juce::Thread::sleep(1); continue; }
+
+        // 9-2) interleaved → planar
+        buf.clear();
+        float* L = buf.getWritePointer(0);
+        float* R = buf.getWritePointer(1);
+        for (size_t i = 0; i < got; ++i) {
+            L[i] = inter[i * 2 + 0];
+            R[i] = inter[i * 2 + 1];
+        }
+
+        // 9-3) 플러그인 체인 처리
+        midi.clear();
+        host_->processChainOffline(buf, midi);
+
+        // 9-4) 헤드 레턴시 만큼 스킵
+        int writeOffset = 0;
+        int writeCount = (int)got;
+        if (headLeft > 0) {
+            const int skip = juce::jmin(headLeft, (int)got);
+            headLeft -= skip;
+            writeOffset += skip;
+            writeCount -= skip;
+        }
+
+        if (writeCount > 0)
+            writer->writeFromAudioSampleBuffer(buf, writeOffset, writeCount);
+
+        rendered += got;
+    }
+
+    // 10) 정리/복구
+    writer.reset();
+    rust_start_sound(false);
+    rust_set_play_time(prevPos);
+    host_->releaseOffline();
+
+    if (wasPlaying) rust_start_sound(true);
+    if (host_) host_->start();
+
+    DBG("[Export] DONE -> " + outFile.getFullPathName());
+}

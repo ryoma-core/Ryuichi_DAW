@@ -24,27 +24,23 @@ MainComponent::MainComponent()
         fileDragIcon = juce::ImageFileFormat::loadFrom(fileDragFile);
     }
     addMouseListener(this, true);
-
     juce::File vstR(DefaultVSTReverb);
     if (vstR.existsAsFile()) {
         const double sr = static_cast<double>(audioEngine->rust_get_out_sr());
         const int    bs = static_cast<int>(audioEngine->rust_get_out_bs());
         DefaultVST3FromFile(reverb,vstR.getFullPathName(), sr, bs);
     }
-    mixers.trackMixer_0->reverbToggleButton.onClick = [this]() {
+    playBar.reverbToggleButton.onClick = [this]() {
         if (!(reverb && reverb->instance)) { DBG("reverb not ready"); return; }
-        bool onOff = mixers.trackMixer_0->reverbToggleButton.getToggleState();
-        reverb->instance->suspendProcessing(!onOff);
-        if (onOff) {
-            if (auto* bp = reverb->instance->getBypassParameter())
-                bp->setValueNotifyingHost(0.0f); // 1.0 = Bypass 활성(효과 OFF)
-        }
-        else {
-            if (auto* bp = reverb->instance->getBypassParameter())
-                bp->setValueNotifyingHost(1.0f); // 1.0 = Bypass 활성(효과 OFF)
-        }
+        reverbEnabled = playBar.reverbToggleButton.getToggleState();
+        DBG(juce::String("REVERB_BUTTON_STATE=") << (reverbEnabled ? "On" : "Off"));
+        reverb->instance->suspendProcessing(!reverbEnabled);
+        if (audioEngine && audioEngine->host_)
+            audioEngine->host_->setBypassed(reverb->instance.get(), !reverbEnabled);
         };
-
+    soundBrowser.sourcePanel.soundFile->sample_path = [this](const char* path) {
+        audioEngine->rust_sample_add(path);
+        };
 #pragma endregion
 #pragma region FileDrepped callBack
     mainTrack.onDropIntoSubTrack = [this](int track, const juce::File& file, float laneX)
@@ -277,6 +273,11 @@ MainComponent::MainComponent()
         /*audioEngine->rust_vst3_execution(s.toRawUTF8());*/
     };
 #pragma endregion
+#pragma region SAVE
+    mainTrack.onExportWav = [this]() {
+        audioEngine->rust_save_wav();
+        };
+#pragma endregion 
 }
 MainComponent::~MainComponent()
 {
@@ -291,6 +292,26 @@ MainComponent::~MainComponent()
         s.window.reset();
     }
     pluginSlots.clear();
+    juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    mainTrack.subTrackController_0->muteToggleButton.setLookAndFeel(nullptr);
+    mainTrack.subTrackController_1->muteToggleButton.setLookAndFeel(nullptr);
+    mainTrack.subTrackController_2->muteToggleButton.setLookAndFeel(nullptr);
+    mainTrack.subTrackController_3->muteToggleButton.setLookAndFeel(nullptr);
+
+    mixers.trackMixer_0->volumeKnob.setLookAndFeel(nullptr);
+    mixers.trackMixer_1->volumeKnob.setLookAndFeel(nullptr);
+    mixers.trackMixer_2->volumeKnob.setLookAndFeel(nullptr);
+    mixers.trackMixer_3->volumeKnob.setLookAndFeel(nullptr);
+
+    //mixers.trackMixer_0->delayToggleButton.setLookAndFeel(nullptr);
+    //mixers.trackMixer_1->delayToggleButton.setLookAndFeel(nullptr);
+    //mixers.trackMixer_2->delayToggleButton.setLookAndFeel(nullptr);
+    //mixers.trackMixer_3->delayToggleButton.setLookAndFeel(nullptr);
+
+    playBar.reverbToggleButton.setLookAndFeel(nullptr);
+
+    playBar.playToggleButton.setLookAndFeel(nullptr);
+    playBar.stopToggleButton.setLookAndFeel(nullptr);
 }
 
 //==============================================================================
@@ -467,6 +488,8 @@ void MainComponent::mouseDown(const juce::MouseEvent& e)
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
+    if (key.getTextCharacter() == 'q' || key.getTextCharacter() == 'w' ||
+        key.getTextCharacter() == 'e' || key.getTextCharacter() == 'r') { audioEngine->rust_sample_play(); }
     if (key.getTextCharacter() == '+') timeline.pxPerBeat = juce::jmin(800.0, timeline.pxPerBeat * 1.2);
     if (key.getTextCharacter() == '-') timeline.pxPerBeat = juce::jmax(10.0, timeline.pxPerBeat / 1.2);
 
@@ -615,7 +638,7 @@ bool MainComponent::loadVST3FromFile(const juce::String& path, double sampleRate
 
                 // 호스트 체인에 등록 (소유권은 그대로 여기 유지)
                 if (audioEngine && audioEngine->host_)
-                    audioEngine->host_->addPlugin(it->instance.get());
+                    audioEngine->host_->addPlugin(it->instance.get(),false);
 
                 if (it->instance->hasEditor())                   //instance plugin is GUI true?? false??
                 {
@@ -676,8 +699,6 @@ bool MainComponent::DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, co
                     }
                 }
 
-           
-
                 // 3) 슬롯에 소유권 이전
                 plugin.emplace();
                 plugin->instance = std::move(inst);
@@ -690,10 +711,12 @@ bool MainComponent::DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, co
 
                 // 4) 시작은 OFF(진짜 멈춤 시그널)
                 plugin->instance->suspendProcessing(true);
+                
 
                 // 호스트 체인에 등록 (소유권은 그대로 여기 유지)
                 if (audioEngine && audioEngine->host_)
-                    audioEngine->host_->addPlugin(plugin->instance.get());
+                    audioEngine->host_->addPlugin(plugin->instance.get(), true);
+                playBar.reverbToggleButton.setToggleState(false, juce::dontSendNotification);
 
                 DBG("Loaded: " + plugin->instance->getName());
             });

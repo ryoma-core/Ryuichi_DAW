@@ -61,7 +61,7 @@ public:
                                                            int numSamples,            // BS
                      const juce::AudioIODeviceCallbackContext& context) override;    //?
 
-    void addPlugin(juce::AudioProcessor* p);
+    void addPlugin(juce::AudioProcessor* p, bool initiallyBypassed = false);
     void removePlugin(juce::AudioProcessor* p);
     void clearPlugins();
 
@@ -70,6 +70,13 @@ public:
     inline int    currentBlockSize()  const noexcept { return blockSize_; }
     inline int    currentOutChannels() const noexcept { return outCh_; }
 
+    void setBypassed(juce::AudioProcessor* p, bool shouldBypass);
+    bool isBypassed(juce::AudioProcessor* p) const;
+
+    bool prepareForOffline(double sampleRate, int blockSize);
+    void processChainOffline(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi);
+    void releaseOffline();
+    int  getTotalLatencySamples() const;
 private:
     juce::AudioDeviceManager dm;
 
@@ -77,6 +84,7 @@ private:
     double sampleRate_ = 0.0;
     int blockSize_ = 0;
     int outCh_ = 0;
+    std::vector<uint8_t> bypass_;
 
     // interleaved 임시 버퍼(콜백마다 재할당 피하려고 보관)
     std::vector<float> interBuf_;

@@ -20,7 +20,7 @@ class SoundFileUI  : public juce::Component
 public:
     SoundFileUI();
     ~SoundFileUI() override;
-
+    std::function<void(const char* path)> sample_path;
     void paint (juce::Graphics&) override;
     void resized() override;
     void addItem(const juce::File& file);

@@ -1127,6 +1127,7 @@ dependencies = [
  "anyhow",
  "core_affinity",
  "cpal",
+ "crossbeam-utils",
  "hound",
  "image",
  "rtrb",

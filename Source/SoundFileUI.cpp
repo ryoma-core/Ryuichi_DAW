@@ -18,6 +18,14 @@ SoundFileUI::SoundFileUI()
     soundListBox.setRowHeight(24);
     addAndMakeVisible(soundListBox);
     soundListBox.addMouseListener(this, true);
+    soundPanel->onItemClicked = [this](const juce::File& f, int row, const juce::MouseEvent& e)
+        {
+            // ¼±ÅÃ ¹Ý¿µÇÏ°í
+            soundListBox.selectRow(row);
+            auto p = f.getFullPathName();
+            sample_path(p.toRawUTF8());
+            // ¿©±â¼­ MainComponent·Î Àü´ÞÇÏ°Å³ª, »ùÇÃ ·Îµå/¹Ì¸®µè±â/¿ìÅ¬¸¯ ¸Þ´º µî Ã³¸®
+        };
 }
 
 SoundFileUI::~SoundFileUI()
