@@ -102,7 +102,7 @@ Configuration-specific Linker Flags -> Rust 릴리즈 빌드하여 생성된 DLL
 ---
 ## 🔗 C++ ↔ Rust FFI 헤더
 
-include/rust_audio.h:
+AudioEngine.h
 ```
 #pragma once
 #include <cstdint>
@@ -111,45 +111,14 @@ extern "C" {
     struct TrackConfig;
     struct Engine;
 
-    TrackConfig* rust_audio_track_new(int32_t number);
-    void         rust_audio_track_free(TrackConfig* tk);
+    TrackDatas* rust_audio_track_new(std::int32_t number);
+    void rust_audio_track_free(TrackDatas* track);
 
-    Engine* rust_audio_engine_new(TrackConfig* t0, TrackConfig* t1,
-                                  TrackConfig* t2, TrackConfig* t3);
-    void    rust_audio_engine_free(Engine* e);
-
-    // TODO: 필요한 extern "C" API 추가
+    Engine* rust_audio_engine_new(TrackDatas* track0, TrackDatas* track1, TrackDatas* track2, TrackDatas* track3);
+    void rust_audio_engine_free(Engine* engine);
 }
 ```
 Rust 쪽에는 동일 시그니처로 #[no_mangle] extern "C" 함수가 구현돼 있어야 합니다.
-
----
-
-## 🧩 Visual Studio 설정 (JUCE 프로젝트)
-
-구성: Release | x64
-
-1) C/C++ → General → Additional Include Directories
-```
-<repo>\include
-```
-
-3) Linker → General → Additional Library Directories
-```
-<repo>\rust\your-crate\target\release
-```
-
-4) Linker → Input → Additional Dependencies
-```
-your_rust_engine.lib
-```
-
-5) DLL 배치 (실행 폴더에 필수)
-Build Events → Post-Build Event → Command Line
-```
-xcopy /Y /D "<repo>\rust\your-crate\target\release\your_rust_engine.dll" "$(OutDir)"
-```
-링커는 .lib로 심볼을 해결하고, 실행 시점에 실제 .dll이 <code>$(OutDir)</code> 에 존재해야 로드됩니다.
 
 ---
 
