@@ -72,12 +72,14 @@ Ryuichi_App/
 설치후 Ryuichi.jucer 프로젝트 오픈
 <br/>
 오픈후 비쥬얼스튜디오 빌드 진행
+
 ```text
    실행 시 DLL 파일이 없다면 "정상" (Rust 엔진을 아직 안 붙였기 때문)
+```
+
 ---
 
 ## ⚙️ Rust 엔진 빌드(DLL)
-<br/>
 - **Rust(cargo)** 설치
 <br/>
 Ryuichi\RustSource\ryuichi를 vscode를 통하여 폴더 Open 터미널을 통하여 
@@ -85,11 +87,12 @@ Ryuichi\RustSource\ryuichi를 vscode를 통하여 폴더 Open 터미널을 통�
 ```powershell
 cargo build --release 빌드
 ```
+
 <br/>
-```text
-빌드 완료 이후 Ryuichi\RustSource\ryuichi\target\release 폴더 안에 ryuichi.dll 파일 복사
-Ryuichi\Builds\VisualStudio2022\x64\Debug(아님 Release)\App 에 붙여 넣기
-```
+
+1. 빌드 완료 이후 Ryuichi\RustSource\ryuichi\target\release 폴더 안에 ryuichi.dll 파일 복사 
+2. Ryuichi\Builds\VisualStudio2022\x64\Debug(아님 Release)\App 에 붙여 넣기
+
 <br/>
 3.Projucer에 Exporters 설정 Visual Studio 2022에 Debug , Release 둘다
 ```toml
