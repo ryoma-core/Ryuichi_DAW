@@ -72,16 +72,15 @@ Ryuichi_App/
 설치후 Ryuichi.jucer 프로젝트 오픈
 <br/>
 오픈후 비쥬얼스튜디오 빌드 진행
+[Assets 다운로드](https://drive.google.com/file/d/1m9ydxmQDN2TVKN6PVAy9Syy_I6pJ7Srv/view?usp=sharing)
+
 ```text
-https://drive.google.com/file/d/1m9ydxmQDN2TVKN6PVAy9Syy_I6pJ7Srv/view?usp=sharing
-```
-<br/>
 Assets.zip 파일 다운로드 다운하여 C:\Ryuichi\Builds\VisualStudio2022\x64\Debug(아님 Release)\App 에 압축을 해제하여 디렉토리 형태로 넣어준다.
-<br/>
+```
+
 ```text
    실행 시 DLL 파일이 없다면 "정상" (Rust 엔진을 아직 안 붙였기 때문)
 ```
-
 ---
 
 ## ⚙️ Rust 엔진 빌드(DLL)
