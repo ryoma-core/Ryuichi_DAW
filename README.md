@@ -24,30 +24,29 @@
 ---
 
 ## 🗂️ 폴더 구성
-<br/>
-Ryuichi_App/
-| 경로(Path)                            | 설명                    |
-| ----------------------------------- | --------------------- |
-| `Ryuichi_App/`                      | 루트 디렉터리               |
-| `Ryuichi_App/Source/`               | 메인 실행 소스              |
-| `Ryuichi_App/Source/Main/`          | 메인 엔트리/부트스트랩 파일       |
-| `Ryuichi_App/Source/AudioEngine/`   | 오디오 엔진 관리, I/O, 콜백 연동 |
-| `Ryuichi_App/Source/AssetsPath/`    | 에셋 경로 유틸 및 로더         |
-| `Ryuichi_App/Source/ClipData/`      | 오디오 파형 그리기, 클립 데이터    |
-| `Ryuichi_App/Source/soundData/`     | 파라미터 저장소(볼륨/팬/뮤트 등)   |
-| `Ryuichi_App/Source/TimeLineState/` | UI 타임라인 상태/핸들러        |
-| `Ryuichi_App/GUI/`                  | GUI 전반                |
-| `Ryuichi_App/GUI/BackGround/`       | 메인 윈도우 배경/레이아웃        |
-| `Ryuichi_App/GUI/VST3Window/`       | VST3 윈도우 관리           |
-| `Ryuichi_App/GUI/SoundSource/`      | 사운드 에셋 브라우저/뷰         |
-| `Ryuichi_App/GUI/Button/`           | 버튼 위젯 및 이벤트 처리        |
-| `Ryuichi_App/GUI/Track/`            | 트랙 UI 컴포넌트            |
-| `Ryuichi_App/GUI/Slider/`           | 트랙 볼륨/슬라이더 컨트롤        |
-| `Ryuichi_App/GUI/Mixer/`            | 믹서 UI(채널, 버스 등)       |
-| `Ryuichi_App/GUI/PlayBar/`          | 재생/정지/리버브/BPM 컨트롤     |
-| `Ryuichi_App/GUI/LookAndFeel/`      | 커스텀 Look&Feel 테마      |
-| `Ryuichi_App/Sound/`                | 오디오 콜백/출력 관리          |
-| `Ryuichi_App/README.md`             | 프로젝트 설명               |
+
+| 경로(Path)                            | 설명                         |
+|--------------------------------------|------------------------------|
+| `Ryuichi_App/`                       | 루트 디렉터리                |
+| `Ryuichi_App/Source/`                | 메인 실행 소스               |
+| `Ryuichi_App/Source/Main/`           | 메인 엔트리/부트스트랩 파일  |
+| `Ryuichi_App/Source/AudioEngine/`    | 오디오 엔진 관리, I/O, 콜백 연동 |
+| `Ryuichi_App/Source/AssetsPath/`     | 에셋 경로 유틸 및 로더       |
+| `Ryuichi_App/Source/ClipData/`       | 오디오 파형 그리기, 클립 데이터 |
+| `Ryuichi_App/Source/soundData/`      | 파라미터 저장소(볼륨/팬/뮤트 등) |
+| `Ryuichi_App/Source/TimeLineState/`  | UI 타임라인 상태/핸들러      |
+| `Ryuichi_App/GUI/`                   | GUI 전반                     |
+| `Ryuichi_App/GUI/BackGround/`        | 메인 윈도우 배경/레이아웃    |
+| `Ryuichi_App/GUI/VST3Window/`        | VST3 윈도우 관리             |
+| `Ryuichi_App/GUI/SoundSource/`       | 사운드 에셋 브라우저/뷰      |
+| `Ryuichi_App/GUI/Button/`            | 버튼 위젯 및 이벤트 처리     |
+| `Ryuichi_App/GUI/Track/`             | 트랙 UI 컴포넌트             |
+| `Ryuichi_App/GUI/Slider/`            | 트랙 볼륨/슬라이더 컨트롤    |
+| `Ryuichi_App/GUI/Mixer/`             | 믹서 UI(채널, 버스 등)       |
+| `Ryuichi_App/GUI/PlayBar/`           | 재생/정지/리버브/BPM 컨트롤  |
+| `Ryuichi_App/GUI/LookAndFeel/`       | 커스텀 Look&Feel 테마        |
+| `Ryuichi_App/Sound/`                 | 오디오 콜백/출력 관리        |
+| `Ryuichi_App/README.md`              | 프로젝트 설명                |
 
 ---
 
