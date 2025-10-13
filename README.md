@@ -87,35 +87,16 @@ Ryuichi\RustSource\ryuichi를 vscode를 통하여 폴더 Open 터미널을 통�
 ```powershell
 cargo build --release 빌드
 ```
-
 <br/>
 
 1. 빌드 완료 이후 Ryuichi\RustSource\ryuichi\target\release 폴더 안에 ryuichi.dll 파일 복사 
 2. Ryuichi\Builds\VisualStudio2022\x64\Debug(아님 Release)\App 에 붙여 넣기
-
-<br/>
-3.Projucer에 Exporters 설정 Visual Studio 2022에 Debug , Release 둘다
-```toml
+3. Projucer에 Exporters 설정이 안되어있다면 진행
+Projucer에 Exporters 설정 Visual Studio 2022에 Debug , Release 둘다
 Extra Library Search Paths -> Rust 릴리즈 빌드 하여 추출된 DLL 파일 경로를 입력 (예시:RustSource\ryuichi\target\release)
 Configuration-specific Linker Flags -> Rust 릴리즈 빌드하여 생성된 DLL 파일 이름을 등록 (예시:ryuichi.dll.lib)
-```
-<br/>
-4.다시 디버깅 시도
+4. 다시 디버깅 시도
 
- 
-빌드:
-```powershell
-cd rust\your-crate
-cargo build --release
-```
-
-산출물(예):
-```
-rust\your-crate\target\release\your_rust_engine.dll
-rust\your-crate\target\release\your_rust_engine.lib   # VS 링커용 import lib
-```
-
----
 
 ## 🔗 C++ ↔ Rust FFI 헤더
 
