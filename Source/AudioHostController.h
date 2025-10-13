@@ -49,8 +49,8 @@ public:
     explicit AudioHostController(renderFn fn = {});
     ~AudioHostController() override;
     
-    bool start();   // ±âº» ÀåÄ¡ ¿­±â + Äİ¹é µî·Ï
-    void stop();    // Äİ¹é Á¦°Å + ÀåÄ¡ ´İ±â
+    bool start();   // Â±Ã¢ÂºÂ» Ã€Ã¥Ã„Â¡ Â¿Â­Â±Ã¢ + Ã„ÃÂ¹Ã© ÂµÃ®Â·Ã
+    void stop();    // Ã„ÃÂ¹Ã© ÃÂ¦Â°Ã… + Ã€Ã¥Ã„Â¡ Â´ÃÂ±Ã¢
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
@@ -80,17 +80,17 @@ public:
 private:
     juce::AudioDeviceManager dm;
 
-    renderFn render_;                 // »ı¼ºÀÚ¿¡¼­ ¹ŞÀº ·»´õ Äİ¹é º¸°ü
+    renderFn render_;                 // Â»Ã½Â¼ÂºÃ€ÃšÂ¿Â¡Â¼Â­ Â¹ÃÃ€Âº Â·Â»Â´Ãµ Ã„ÃÂ¹Ã© ÂºÂ¸Â°Ã¼
     double sampleRate_ = 0.0;
     int blockSize_ = 0;
     int outCh_ = 0;
     std::vector<uint8_t> bypass_;
 
-    // interleaved ÀÓ½Ã ¹öÆÛ(Äİ¹é¸¶´Ù ÀçÇÒ´ç ÇÇÇÏ·Á°í º¸°ü)
+    // interleaved Ã€Ã“Â½Ãƒ Â¹Ã¶Ã†Ã›(Ã„ÃÂ¹Ã©Â¸Â¶Â´Ã™ Ã€Ã§Ã‡Ã’Â´Ã§ Ã‡Ã‡Ã‡ÃÂ·ÃÂ°Ã­ ÂºÂ¸Â°Ã¼)
     std::vector<float> interBuf_;
 
-    juce::AudioBuffer<float> procBuf_;                  // ÇÃ·¯±×ÀÎ Ã³¸®¿ë ¹öÆÛ
-    juce::MidiBuffer midi_;                             // (Áö±İÀº ºñ¿ò)
-    juce::SpinLock plugLock_;                           // Ã¼ÀÎ ±³Ã¼ º¸È£
+    juce::AudioBuffer<float> procBuf_;                  // Ã‡ÃƒÂ·Â¯Â±Ã—Ã€Ã ÃƒÂ³Â¸Â®Â¿Ã« Â¹Ã¶Ã†Ã›
+    juce::MidiBuffer midi_;                             // (ÃÃ¶Â±ÃÃ€Âº ÂºÃ±Â¿Ã²)
+    juce::SpinLock plugLock_;                           // ÃƒÂ¼Ã€Ã Â±Â³ÃƒÂ¼ ÂºÂ¸ÃˆÂ£
     std::vector<juce::AudioProcessor*> plugs_;
 };

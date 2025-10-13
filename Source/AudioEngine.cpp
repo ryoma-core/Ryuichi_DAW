@@ -182,34 +182,34 @@ void AudioEngine::rust_sample_stop()
 
 void AudioEngine::rust_save_wav()
 {
-    // 1) Ãâ·Â ÆÄÀÏ: ¹ÙÅÁÈ­¸é/Ryuicni.wav
+    // 1) ÃƒÃ¢Â·Ã‚ Ã†Ã„Ã€Ã: Â¹Ã™Ã…ÃÃˆÂ­Â¸Ã©/Ryuicni.wav
     juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
         .getChildFile("Ryuicni.wav");
     outFile.deleteFile();
 
-    // 2) »óÅÂ ¹é¾÷ + ÀåÄ¡ Á¤Áö
+    // 2) Â»Ã³Ã…Ã‚ Â¹Ã©Â¾Ã· + Ã€Ã¥Ã„Â¡ ÃÂ¤ÃÃ¶
     const bool     wasPlaying = rust_get_is_playing();
     const uint64_t prevPos = rust_get_pos();
     if (host_) host_->stop();
 
-    // 3) ·»´õ ÆÄ¶ó¹ÌÅÍ
+    // 3) Â·Â»Â´Ãµ Ã†Ã„Â¶Ã³Â¹ÃŒÃ…Ã
     const uint32_t sr = juce::jmax<uint32_t>(44100u, rust_get_out_sr());
     const uint32_t block = juce::jmax<uint32_t>(256u, rust_get_out_bs());
     const uint64_t songFrames = rust_project_length_frames(eng.get());
 
-    // 4) ¿ÀÇÁ¶óÀÎ ÁØºñ (ÇÃ·¯±×ÀÎ Ã¼ÀÎ)
+    // 4) Â¿Ã€Ã‡ÃÂ¶Ã³Ã€Ã ÃÃ˜ÂºÃ± (Ã‡ÃƒÂ·Â¯Â±Ã—Ã€Ã ÃƒÂ¼Ã€Ã)
     if (!host_ || !host_->prepareForOffline((double)sr, (int)block)) {
         DBG("[Export] offline prepare failed");
         if (host_) host_->start();
         return;
     }
     const int latency = juce::jmax(0, host_->getTotalLatencySamples());
-    const uint64_t tailFrames = (uint64_t)latency; // Ã¼ÀÎ µå·¹ÀÎ º¸Àå (ÇÊ¿ä½Ã Ãß°¡ tailSec ´õÇØµµ µÊ)
+    const uint64_t tailFrames = (uint64_t)latency; // ÃƒÂ¼Ã€Ã ÂµÃ¥Â·Â¹Ã€Ã ÂºÂ¸Ã€Ã¥ (Ã‡ÃŠÂ¿Ã¤Â½Ãƒ ÃƒÃŸÂ°Â¡ tailSec Â´ÃµÃ‡Ã˜ÂµÂµ ÂµÃŠ)
 
-    // 5) ¿£Áø Á¤·Ä
+    // 5) Â¿Â£ÃÃ¸ ÃÂ¤Â·Ã„
     rust_engine_set_sr(eng.get(), sr);
     rust_set_play_time(0);
-    rust_start_sound(true); // ¿öÄ¿°¡ RB Ã¤¿ì°Ô
+    rust_start_sound(true); // Â¿Ã¶Ã„Â¿Â°Â¡ RB ÃƒÂ¤Â¿Ã¬Â°Ã”
 
     // 6) WAV writer
     juce::WavAudioFormat wav;
@@ -235,15 +235,15 @@ void AudioEngine::rust_save_wav()
         return;
     }
 
-    // 7) ¹öÆÛµé
-    std::vector<float> inter(block * 2, 0.0f);       // ¿£Áø ÀÎÅÍ¸®ºêµå
-    juce::AudioBuffer<float> buf(2, (int)block);     // ÇÃ·¯±×ÀÎ ÀÔÃâ·Â
+    // 7) Â¹Ã¶Ã†Ã›ÂµÃ©
+    std::vector<float> inter(block * 2, 0.0f);       // Â¿Â£ÃÃ¸ Ã€ÃÃ…ÃÂ¸Â®ÂºÃªÂµÃ¥
+    juce::AudioBuffer<float> buf(2, (int)block);     // Ã‡ÃƒÂ·Â¯Â±Ã—Ã€Ã Ã€Ã”ÃƒÃ¢Â·Ã‚
     juce::MidiBuffer midi;
 
-    // 8) ·¹ÅÏ½Ã Çìµå ½ºÅµ »óÅÂ
+    // 8) Â·Â¹Ã…ÃÂ½Ãƒ Ã‡Ã¬ÂµÃ¥ Â½ÂºÃ…Âµ Â»Ã³Ã…Ã‚
     int headLeft = latency;
 
-    // 9) ·»´õ ·çÇÁ: ³ë·¡ ÀüÃ¼ + ·¹ÅÏ½Ã Å×ÀÏ
+    // 9) Â·Â»Â´Ãµ Â·Ã§Ã‡Ã: Â³Ã«Â·Â¡ Ã€Ã¼ÃƒÂ¼ + Â·Â¹Ã…ÃÂ½Ãƒ Ã…Ã—Ã€Ã
     uint64_t rendered = 0;
     const uint64_t targetFrames = songFrames + tailFrames;
 
@@ -251,11 +251,11 @@ void AudioEngine::rust_save_wav()
     {
         const uint32_t todo = (uint32_t)juce::jmin<uint64_t>(block, targetFrames - rendered);
 
-        // 9-1) ¿£Áø¿¡¼­ ÀÎÅÍ¸®ºêµå »Ì±â
+        // 9-1) Â¿Â£ÃÃ¸Â¿Â¡Â¼Â­ Ã€ÃÃ…ÃÂ¸Â®ÂºÃªÂµÃ¥ Â»ÃŒÂ±Ã¢
         size_t got = rust_render_interleaved(eng.get(), inter.data(), (size_t)todo, 2);
         if (got == 0) { juce::Thread::sleep(1); continue; }
 
-        // 9-2) interleaved ¡æ planar
+        // 9-2) interleaved Â¡Ã¦ planar
         buf.clear();
         float* L = buf.getWritePointer(0);
         float* R = buf.getWritePointer(1);
@@ -264,11 +264,11 @@ void AudioEngine::rust_save_wav()
             R[i] = inter[i * 2 + 1];
         }
 
-        // 9-3) ÇÃ·¯±×ÀÎ Ã¼ÀÎ Ã³¸®
+        // 9-3) Ã‡ÃƒÂ·Â¯Â±Ã—Ã€Ã ÃƒÂ¼Ã€Ã ÃƒÂ³Â¸Â®
         midi.clear();
         host_->processChainOffline(buf, midi);
 
-        // 9-4) Çìµå ·¹ÅÏ½Ã ¸¸Å­ ½ºÅµ
+        // 9-4) Ã‡Ã¬ÂµÃ¥ Â·Â¹Ã…ÃÂ½Ãƒ Â¸Â¸Ã…Â­ Â½ÂºÃ…Âµ
         int writeOffset = 0;
         int writeCount = (int)got;
         if (headLeft > 0) {
@@ -284,7 +284,7 @@ void AudioEngine::rust_save_wav()
         rendered += got;
     }
 
-    // 10) Á¤¸®/º¹±¸
+    // 10) ÃÂ¤Â¸Â®/ÂºÂ¹Â±Â¸
     writer.reset();
     rust_start_sound(false);
     rust_set_play_time(prevPos);

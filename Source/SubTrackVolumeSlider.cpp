@@ -14,15 +14,15 @@
 //==============================================================================
 SubTrackVolumeSlider::SubTrackVolumeSlider()
 {
-    setSliderStyle(juce::Slider::LinearHorizontal); // ?? ¼öÆò ½½¶óÀÌ´õ
-    setRange(0.0, 1.0, 0.01); // º¼·ý ¹üÀ§
-    setValue(0.5); // ÃÊ±â°ª
-    setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0); // ÅØ½ºÆ® ¹Ú½º ¼û±è
+    setSliderStyle(juce::Slider::LinearHorizontal); // ?? Â¼Ã¶Ã†Ã² Â½Â½Â¶Ã³Ã€ÃŒÂ´Ãµ
+    setRange(0.0, 1.0, 0.01); // ÂºÂ¼Â·Ã½ Â¹Ã¼Ã€Â§
+    setValue(0.5); // ÃƒÃŠÂ±Ã¢Â°Âª
+    setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0); // Ã…Ã˜Â½ÂºÃ†Â® Â¹ÃšÂ½Âº Â¼Ã»Â±Ã¨
 
     onValueChange = [this]()
         {
-            DBG("º¼·ý º¯°æµÊ: " << getValue());
-            // ¿©±â¼­ Rust ÂÊÀ¸·Î °ª Àü´ÞÇÏ´Â ·ÎÁ÷ ³ÖÀ¸¸é µÊ
+            DBG("ÂºÂ¼Â·Ã½ ÂºÂ¯Â°Ã¦ÂµÃŠ: " << getValue());
+            // Â¿Â©Â±Ã¢Â¼Â­ Rust Ã‚ÃŠÃ€Â¸Â·ÃŽ Â°Âª Ã€Ã¼Â´ÃžÃ‡ÃÂ´Ã‚ Â·ÃŽÃÃ· Â³Ã–Ã€Â¸Â¸Ã© ÂµÃŠ
         };
 }
 
