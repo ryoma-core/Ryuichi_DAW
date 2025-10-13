@@ -73,7 +73,7 @@ Ryuichi_App/
 <br/>
 오픈후 비쥬얼스튜디오 빌드 진행
 <br/>
-```
+```text
 https://drive.google.com/file/d/1m9ydxmQDN2TVKN6PVAy9Syy_I6pJ7Srv/view?usp=sharing
 ```
 <br/>
