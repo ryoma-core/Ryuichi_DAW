@@ -19,13 +19,11 @@ extern "C"
 {
     struct Engine;
     struct TrackDatas;
-    TrackDatas* rust_audio_track_new(std::int32_t number);
+    TrackDatas* rust_audio_track_new();
     void rust_audio_track_free(TrackDatas* track);
 
     Engine* rust_audio_engine_new(TrackDatas* track0, TrackDatas* track1, TrackDatas* track2, TrackDatas* track3);
     void rust_audio_engine_free(Engine* engine);
-
-    void rust_free_string(char* s);
 
     bool rust_sound_play(Engine* engine);
     bool rust_sound_stop(Engine* engine);
@@ -40,7 +38,6 @@ extern "C"
 
     size_t rust_render_interleaved(Engine* engine, float* inter, size_t frames, uint32_t ch);
     void rust_engine_set_sr(Engine* engine, uint32_t sr);
-    void rust_audio_tick(Engine* engine);
 
     uint64_t rust_transport_pos(Engine* engine);
     uint32_t rust_transport_sr (Engine* engine);
@@ -74,12 +71,8 @@ public:
     ~AudioEngine() override;
     void paint (juce::Graphics&) override;
     void resized() override;
-    const char* rust_waveform_create(const char* path, const char* name);
-    void rust_string_delete(char* s);
-   /* void rust_engine_delete();*/
 
     void rust_start_sound(bool bstart);
-    void rust_eng_tick();
     bool rust_file_update(int32_t number, const char* path, uint64_t tl_start, uint64_t tl_len, uint32_t src);
     bool rust_file_move(int32_t old_track, uint64_t old_start, int32_t new_track, uint64_t new_start);
     bool rust_file_delet(int32_t track, uint64_t start);
@@ -87,7 +80,6 @@ public:
     bool rust_mute_update(bool muted , int tracknum);
     bool rust_pan_update(float pan, int tracknum);
     bool rust_bpm_update(float bpm);
-    bool rust_vst3_execution(const char* path_utf8);
     uint64_t rust_get_pos();
     uint32_t rust_get_sr();
     bool rust_get_is_playing();

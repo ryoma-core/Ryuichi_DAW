@@ -46,8 +46,8 @@ MainComponent::MainComponent()
     mainTrack.onDropIntoSubTrack = [this](int track, const juce::File& file, float laneX)
         {
             const double s = timeline.xToSamples(laneX);
-            const uint64_t startS = (uint64_t)timeline.snapSamples(s, 4);
-            addClipToTrack(track, file, startS);
+            const uint64_t startProj = (uint64_t)timeline.snapSamples(s, 4);
+            addClipToTrack(track, file, startProj);
         };
 #pragma endregion
 #pragma region SubTrackImg reference
@@ -191,13 +191,16 @@ MainComponent::MainComponent()
         const float newBpm = playBar.bpm.bpmEditor.getText().getFloatValue();
         if (newBpm > 0.0f && audioEngine->rust_bpm_update(newBpm)) {
             timeline.bpm = newBpm;
-            if (mainTrack.subTrack_0) mainTrack.subTrack_0->repaint();
-            if (mainTrack.subTrack_1) mainTrack.subTrack_1->repaint();
-            if (mainTrack.subTrack_2) mainTrack.subTrack_2->repaint();
-            if (mainTrack.subTrack_3) mainTrack.subTrack_3->repaint();
+            const double outSR = (double)audioEngine->rust_get_out_sr();
+            for (int t = 0; t < 4; ++t) {
+                for (auto* c : clips[t]) c->recalcProjectFrames(outSR, newBpm);
+                repaintTrack(t);
+
+            }
             playBar.repaint();
             DBG("[BPM_Update]-Ok");
-        } else {
+        }
+        else {
             DBG("[BPM_Update]-Error");
         }
         };
@@ -390,11 +393,11 @@ void MainComponent::mouseDrag(const juce::MouseEvent& e)
             repaintTrack(oldTrack);
         }
     }
-    selectedClip->startS = (uint64_t)std::llround(newStart);
+    selectedClip->startProjFrames = (uint64_t)std::llround(newStart);
     repaintTrack(selectedTrack);
 
     dragNewTrack = selectedTrack;
-    dragNewStart = selectedClip->startS;
+    dragNewStart = selectedClip->startProjFrames;
 }
 void MainComponent::mouseUp(const juce::MouseEvent&)
 {
@@ -410,7 +413,7 @@ void MainComponent::mouseUp(const juce::MouseEvent&)
                 int curIdx = clips[newTrackWas].indexOf(selectedClip);
                 ClipData* p = (curIdx >= 0) ? clips[newTrackWas].removeAndReturn(curIdx)
                     : selectedClip;
-                p->startS = dragOrigStart;
+                p->startProjFrames = dragOrigStart;
                 clips[dragOrigTrack].add(p);
 
                 selectedClip = p;
@@ -444,7 +447,7 @@ void MainComponent::mouseDown(const juce::MouseEvent& e)
         if (idx >= 0)
         {
             ClipData* victim = clips[hitTrack][idx];
-            const uint64_t victimStart = victim->startS;
+            const uint64_t victimStart = victim->startProjFrames;
 
             if (audioEngine && audioEngine->rust_file_delet(hitTrack, victimStart)) {
 
@@ -475,14 +478,14 @@ void MainComponent::mouseDown(const juce::MouseEvent& e)
     isDraggingClip = true;
 
     dragOrigTrack = hitTrack;
-    dragOrigStart = selectedClip->startS;
+    dragOrigStart = selectedClip->startProjFrames;
 
     // 드래그 중 최신값(초기엔 원본과 동일)
     dragNewTrack = hitTrack;
-    dragNewStart = selectedClip->startS;
+    dragNewStart = selectedClip->startProjFrames;
 
     // 클릭 지점이 클립 시작으로부터 얼마나 떨어져 있는지(샘플) 저장
-    dragGrabOffsetS = (double)sClamped - (double)selectedClip->startS;
+    dragGrabOffsetS = (double)sClamped - (double)selectedClip->startProjFrames;
 
 }
 
@@ -526,28 +529,39 @@ void MainComponent::addClipToTrack(int track, const juce::File& file, uint64_t s
     if (track < 0 || track >= 4) return;
     if (!file.existsAsFile())     return;
 
-    std::unique_ptr<juce::AudioFormatReader> r(audioShared.fm.createReaderFor(file)); //포맷 리더
-    if (!r) return; 
+    std::unique_ptr<juce::AudioFormatReader> r(audioShared.fm.createReaderFor(file));
+    if (!r) return;
 
-    const double   srcSRd = r->sampleRate; //원본 파일의 샘플레이트 총
-    if (srcSRd <= 0.0) return;                    // 방어
-    const uint32_t srcSR = (uint32_t)std::llround(srcSRd); //반올림해서 정수로 치환
-    const uint64_t srcLenS = (uint64_t)r->lengthInSamples;  //원본 전체 길이
+    const double   srcSRd = r->sampleRate;         if (srcSRd <= 0.0) return;
+    const uint32_t srcSR = (uint32_t)std::llround(srcSRd);
+    const uint64_t srcLenS = (uint64_t)r->lengthInSamples;
 
-    // 2) 타임라인 SR 기준 길이(샘플)로 환산
-    const double   sec = (double)srcLenS / srcSRd; // 파일의 총 재생 시간 [seconds] = samples / (samples/sec)
-    const uint64_t lenS = (uint64_t)std::llround(sec * timeline.sr); // 초당 처리 샘플  * 48000 뭔지모르겠음여기
-    if (lenS == 0) return;                        // 무음/0길이 방어
+    // 1) 소스 좌표로 Clip 생성
+    auto* c = new ClipData(audioShared.fm, audioShared.cache, file,
+        /*startSrcSamples*/ 0,
+        /*lenSrcSamples*/   srcLenS);
 
-    // 3) UI ClipData 생성/보관
-    auto* c = new ClipData(audioShared.fm, audioShared.cache, file, startSamples, lenS);
+    // 2) 프로젝트 좌표로 환산(BPM, 출력 SR 반영)
+    const double outSR = (double)audioEngine->rust_get_out_sr();
+    const double bpm = timeline.bpm;
+    c->recalcProjectFrames(outSR, bpm);
+
+    // 3) 타임라인 배치(드랍 위치는 '프로젝트 프레임' 단위)
+    c->startProjFrames = startSamples;
+
     clips[track].add(c);
 
-    // 4) 엔진 등록 (UTF-8 포인터 수명 보장)
+    // 4) 엔진에도 프로젝트 좌표로 전달
     if (audioEngine) {
-        juce::String pathStr = file.getFullPathName();     // 수명 보장
+        const juce::String pathStr = file.getFullPathName();
         const char* path = pathStr.toRawUTF8();
-        audioEngine->rust_file_update(track, path, startSamples, lenS, srcSR);
+        audioEngine->rust_file_update(
+            track,
+            path,
+            /*startProjectFrames*/ c->startProjFrames,
+            /*lenProjectFrames*/   c->lenProjFrames,
+            /*srcSR*/              srcSR
+        );
     }
 
     repaintTrack(track);
@@ -606,7 +620,7 @@ int MainComponent::findClipIndexAtSample(int track, uint64_t s) const
     const auto& arr = clips[track];
     for (int i = 0; i < arr.size(); ++i) {
         if (auto* c = arr[i]) {
-            if (s >= c->startS && s < c->startS + c->lenS)
+            if (s >= c->startProjFrames && s < c->startProjFrames + c->lenProjFrames)
             {
                 return i;
             }

@@ -34,39 +34,54 @@ void SubTrack::paint (juce::Graphics& g)
 
     if (timeline != nullptr)
         drawBeatGrid(g, getLocalBounds());
-    if (clips && timeline) {
-        for (auto* c : *clips) {
-            const int x = (int)std::floor(timeline->samplesToX((double)c->startS));
-            const int w = (int)std::ceil((double)c->lenS / timeline->samplesPerPixel());
+
+    if (clips && timeline)
+    {
+        // 프로젝트 좌표(출력 SR 기준 프레임) → 픽셀
+        const double pxPerFrame = 1.0 / timeline->samplesPerPixel();
+        const double viewStartF = timeline->xToSamples((float)getLocalBounds().getX());
+
+        for (auto* c : *clips)
+        {
+            // 위치/폭: 프로젝트 프레임 사용
+            const double xpx = ((double)c->startProjFrames - viewStartF) * pxPerFrame;
+            const double wpx = (double)c->lenProjFrames * pxPerFrame;
+
+            const int x = (int)std::floor(xpx);
+            const int w = (int)std::ceil(juce::jmax(8.0, wpx));
             juce::Rectangle<int> r(x, 0, juce::jmax(8, w), getHeight());
 
-            g.setColour(juce::Colours::dimgrey.darker(0.2f)); 
+            g.setColour(juce::Colours::dimgrey.darker(0.2f));
             g.fillRoundedRectangle(r.toFloat(), 4.0f);
-            g.setColour(juce::Colours::white.withAlpha(0.35f)); 
+            g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.drawRoundedRectangle(r.toFloat(), 4.0f, 1.0f);
 
-            if (c->thumb && c->thumb->getTotalLength() > 0.0) {
+            // 썸네일: 소스 구간만 그리기
+            if (c->thumb && c->thumb->getTotalLength() > 0.0)
+            {
                 g.setColour(juce::Colours::lime);
-                auto drawArea = r.reduced(2);               // Rectangle<int>
-                c->thumb->drawChannels(g, drawArea, 0.0, c->thumb->getTotalLength(), 1.0f);
+                auto drawArea = r.reduced(2);
+                const double srcStartSec = (double)c->startSrcSamples / c->srcSampleRate;
+                const double srcEndSec = (double)(c->startSrcSamples + c->lenSrcSamples) / c->srcSampleRate;
+                c->thumb->drawChannels(g, drawArea, srcStartSec, srcEndSec, 1.0f);
             }
         }
     }
-    if (timeline != nullptr)
+
+    if (timeline != nullptr && playheadSamples)
     {
-        const double s = (double)*playheadSamples;
-        const float px = timeline->samplesToX(s);
+        const double frames = (double)*playheadSamples;        // 프로젝트 프레임
+        const float  px = timeline->samplesToX(frames);    // 프레임→픽셀
 
         auto area = getLocalBounds();
-        // 살짝 하이라이트(선 주변 반투명 박스) - 옵션
-        g.setColour(juce::Colours::red.withAlpha(0.10f));
-        g.fillRect(juce::Rectangle<float>(px - 10.0f, (float)area.getY(), 20.0f, (float)area.getHeight()));
 
-        // 메인 라인
+        g.setColour(juce::Colours::red.withAlpha(0.10f));
+        g.fillRect(juce::Rectangle<float>(px - 10.0f, (float)area.getY(),
+            20.0f, (float)area.getHeight()));
+
         g.setColour(juce::Colours::red.withAlpha(0.95f));
         g.drawLine(px + 0.5f, (float)area.getY(), px + 0.5f, (float)area.getBottom(), 2.0f);
 
-        // 위쪽 작은 삼각 표시 - 옵션
         juce::Path head;
         head.addTriangle(px - 4.0f, (float)area.getY(),
             px + 4.0f, (float)area.getY(),

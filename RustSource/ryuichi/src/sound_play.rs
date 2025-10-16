@@ -1,14 +1,10 @@
-use crate::rlog;
 use crate::unit::*;
 use crate::Clip;
 use crate::DecoderState;
-use crate::Duration;
 use crate::Engine;
-use crate::Instant;
 use crate::TrackTimeline;
-use crate::CTR_CB;
 pub use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-pub use cpal::{Sample, SampleFormat};
+pub use cpal::SampleFormat;
 pub use rtrb::{Consumer, Producer, RingBuffer};
 pub use std::{
     ffi::CStr,
@@ -48,7 +44,6 @@ pub extern "C" fn rust_sound_play(engine: *mut Engine) -> bool {
         eng.pause_workers();
         eng.align_write_pos_to_transport();
         eng.flush_ringbuffers();
-        eng.budget.reset();
 
         // 2) RB1만 프리필
         let _ = eng.prefill_rb1_blocking(PREFILL_ON_START);
@@ -57,7 +52,6 @@ pub extern "C" fn rust_sound_play(engine: *mut Engine) -> bool {
     // 3) 재생 시작
     eng.play_time_manager.start();
     eng.wake_workers();
-    eng.last_auto_rebuffer_at = Instant::now();
     true
 }
 
@@ -72,7 +66,6 @@ pub extern "C" fn rust_sound_stop(engine: *mut Engine) -> bool {
         eng.play_time_manager.stop();
         eng.pause_workers();
         eng.flush_ringbuffers(); // 선택: 멈출 때 비워두면 다음 시작이 깔끔
-        eng.budget.reset();
     });
 
     true
@@ -99,7 +92,6 @@ pub extern "C" fn rust_sound_seek(engine: *mut Engine, pos_frames: u64) -> bool 
 
         // RB1만 초기화/프리필
         eng.flush_ringbuffers();
-        eng.budget.reset();
         let _ = eng.prefill_rb1_blocking(PREFILL_ON_SEEK);
     });
 
@@ -107,9 +99,12 @@ pub extern "C" fn rust_sound_seek(engine: *mut Engine, pos_frames: u64) -> bool 
         eng.play_time_manager.start();
         eng.wake_workers();
     }
-    eng.last_auto_rebuffer_at = Instant::now();
     true
 }
+
+// -------------------------
+// 인터리브드 출력
+// -------------------------
 
 #[no_mangle]
 pub extern "C" fn rust_render_interleaved(
@@ -235,6 +230,9 @@ pub extern "C" fn rust_render_interleaved(
     frames
 }
 
+// -------------------------
+// 링버퍼에 무음 채우기
+// -------------------------
 #[inline]
 fn push_silence(prod: &mut Producer<f32>, frames: usize) -> usize {
     let mut wrote = 0usize;
@@ -249,24 +247,34 @@ fn push_silence(prod: &mut Producer<f32>, frames: usize) -> usize {
     }
     wrote
 }
+
+// -------------------------
+// 디코더에서 패킷 읽기
+// -------------------------
 fn refill_packet(d: &mut DecoderState) -> Result<usize, String> {
     let pkt = match d.format.next_packet() {
-        Ok(p) => p,
+        //다음 패킷 읽기
+        Ok(p) => p,             //성공
         Err(_) => return Ok(0), // <-- 에러도 0프레임(EOF 취급)
     };
     let decoded = match d.decoder.decode(&pkt) {
-        Ok(x) => x,
+        //디코더로 디코드
+        Ok(x) => x,             //성공
         Err(_) => return Ok(0), // <-- 디코드 에러도 EOF 취급
     };
-    let dec_spec = *decoded.spec();
-    let cap = decoded.capacity();
+    let dec_spec = *decoded.spec(); //디코드된 오디오의 스펙
+    let cap = decoded.capacity(); //디코드된 오디오의 용량
     if d.sample_buf.capacity() < cap {
-        d.sample_buf = SampleBuffer::<f32>::new(cap as u64, *decoded.spec());
+        //샘플버퍼 용량이 부족하면
+        d.sample_buf = SampleBuffer::<f32>::new(cap as u64, *decoded.spec()); //새로 생성
     }
-    d.sample_buf.copy_interleaved_ref(decoded);
-    Ok(dec_spec.channels.count())
+    d.sample_buf.copy_interleaved_ref(decoded); //디코드된 오디오를 샘플버퍼에 복사
+    Ok(dec_spec.channels.count()) //채널 수 반환
 }
 
+// -------------------------
+// 디코더에서 한 프레임(L/R) 읽기
+// -------------------------
 fn fetch_lr_once(
     d: &mut DecoderState,
     si: &mut usize,
@@ -292,17 +300,21 @@ fn fetch_lr_once(
     }
 }
 
+// -------------------------
+// 디코더 시킹
+// -------------------------
 pub fn seek_decoder_to_src_samples(dec: &mut DecoderState, src_off: u64) -> anyhow::Result<()> {
     // 시각(초)으로 변환
     let time = Time::from((src_off as f64) / (dec.src_sr as f64));
 
     // 1) 먼저 track_id만 뽑아서 immutable borrow를 즉시 drop
     let track_id = {
+        //블록으로 묶어서 drop 유도
         let t = dec
             .format
-            .default_track()
-            .ok_or_else(|| anyhow::anyhow!("no default track"))?;
-        t.id
+            .default_track() //기본트랙
+            .ok_or_else(|| anyhow::anyhow!("no default track"))?; //없으면 에러
+        t.id //트랙 아이디
     };
 
     // 2) 이제 mutable borrow로 seek 가능
@@ -334,32 +346,47 @@ pub fn seek_decoder_to_src_samples(dec: &mut DecoderState, src_off: u64) -> anyh
     Ok(())
 }
 
+
+// -------------------------
+// 디코더 준비
+// -------------------------
 #[inline]
 fn ensure_decoder_for(dec: &mut Option<DecoderState>, clip: &Clip) -> bool {
     match dec {
+        //디코더가 없으면 열고, 있으면 재사용/재열기
         None => match open_decoder_for(&clip.file_path) {
+            //디코더 열기
             Ok(d) => {
-                *dec = Some(d);
-                true
+                //성공
+                *dec = Some(d); //저장
+                true //성공
             }
-            Err(_) => false,
+            Err(_) => false, //실패
         },
         Some(d0) => {
+            //디코더가 이미 있으면
             if d0.file_path != clip.file_path || d0.src_sr != clip.src_sr {
+                //다른 파일이거나 샘플링레이트가 다르면
                 match open_decoder_for(&clip.file_path) {
+                    //다시 열기
                     Ok(nd) => {
-                        *dec = Some(nd);
-                        true
+                        *dec = Some(nd); //저장
+                        true //성공
                     }
-                    Err(_) => false,
+                    Err(_) => false, //실패
                 }
             } else {
-                true
+                //같은 파일이면 재사용
+                true //성공
             }
         }
     }
 }
 
+
+// -------------------------
+// 트랙 크립 계산 및 디코드/리샘플/링버퍼 푸시
+// -------------------------
 pub fn fill_track_once(
     tr: &mut TrackTimeline,
     dec: &mut Option<DecoderState>,
@@ -373,16 +400,17 @@ pub fn fill_track_once(
         //할 일이 없음
         return Ok(0);
     }
-    // ★ write_pos가 재생위치보다 뒤로 가면 안 됨(역행 금지)
+
     if tr.write_pos_frames < transport_pos {
-        tr.write_pos_frames = transport_pos;
+        //트랙의 쓰기 위치가 재생 위치보다 뒤에 있으면
+        tr.write_pos_frames = transport_pos; //재생 위치로 맞춤
     }
 
     let mut pos = tr.write_pos_frames; //현재 쓰기 위치
     let mut produced_total = 0usize; //마지막에 사용량 저장을 위해
 
     while frames_need > 0 {
-        // 1) 현재 pos에 활성 클립 찾기
+        //현재 pos에 활성 클립 찾기
         let active_clip = tr
             .clips
             .range(..=pos) //<= 0부터 pos 까지 키값을 가진 클립들중에서
@@ -391,7 +419,8 @@ pub fn fill_track_once(
                 //and_then 는 Option이 Some일때만 실행 _ 시작부분 , c 클립
                 let end = c.tl_start.saturating_add(c.tl_len); //클립의 끝 위치 시작시작 + 길이 = 끝(saturating_add 오버플로우 방지)
                 if pos < end {
-                    Some(c)
+                    //pos가 클립의 끝보다 작으면(즉, 클립 구간 안에 있으면)
+                    Some(c) // Some(c) 반환
                 } else {
                     None
                 } //pos가 클립의 끝보다 작으면(즉, 클립 구간 안에 있으면) Some(c) 반환 아니면 None
@@ -399,10 +428,10 @@ pub fn fill_track_once(
 
         match active_clip {
             None => {
-                // 2) 빈 구간 → 다음 클립 시작 전까지 무음
+                //빈 구간 → 다음 클립 시작 전까지 무음
                 let next_start = tr
                     .clips
-                    .range((pos + 1)..)
+                    .range((pos + 1)..) //pos+1 부터 끝까지 키값을 가진 클립들중에서
                     .next() // 다음 클립 시작 위치찾기
                     .map(|(s, _)| *s) // 키값(시작 위치) 추출
                     .unwrap_or(u64::MAX); // 없으면 무한대
@@ -413,51 +442,51 @@ pub fn fill_track_once(
                         .min(frames_need) // 필요한 프레임
                 };
 
-                let wrote = push_silence(prod, gap);
+                let wrote = push_silence(prod, gap); //무음 채우기
                 if wrote == 0 {
                     break;
                 } // 링버퍼 만땅
-                produced_total += wrote;
+                produced_total += wrote; //생산량 누적
                 pos += wrote as u64; // 진행 시킴
                 frames_need -= wrote; // 남은 필요량 감소
             }
             Some(clip) => {
-                // 3) 클립 구간 → 필요한 만큼만 디코드 후 리샘플해서 push
+                // 클립 구간 → 필요한 만큼만 디코드 후 리샘플해서 push
                 let clip_end = clip.tl_start.saturating_add(clip.tl_len);
                 let can_write = ((clip_end.saturating_sub(pos)) as usize).min(frames_need);
 
-                // (1) 디코더 열기/재열기
+                // 디코더 열기/재열기
                 if !ensure_decoder_for(dec, clip) {
                     // 디코더를 못 열면 'can_write' 만큼 무음으로 채우고 다음 루프로 (스핀 방지)
                     let wrote = push_silence(prod, can_write.min(frames_need));
-                    produced_total += wrote;
-                    pos += wrote as u64;
-                    frames_need = frames_need.saturating_sub(wrote);
-                    continue;
+                    produced_total += wrote; //생산량 누적
+                    pos += wrote as u64; // 진행 시킴
+                    frames_need = frames_need.saturating_sub(wrote); // 남은 필요량 감소
+                    continue; //다음 루프
                 }
 
                 // 여기부터는 안전
                 let d = dec.as_mut().unwrap();
 
-                // (2) 타임라인 pos → 소스 좌표(src_sr)로 매핑
-                let rel = (pos.saturating_sub(clip.tl_start)) as f64;
-                let step = (d.src_sr as f64 / engine_sr as f64) * (tempo_ratio as f64);
-                let src_begin = (rel * step).floor() as u64;
+                // 타임라인 pos → 소스 좌표(src_sr)로 매핑
+                let rel = (pos.saturating_sub(clip.tl_start)) as f64; //클립내 상대 위치
+                let step = (d.src_sr as f64 / engine_sr as f64) * (tempo_ratio as f64); //디코더에서 덜읽어야할 sr 수치
+                let src_begin = (rel * step).floor() as u64; //디코더 기준 시작 위치
 
-                // (3) 정확 시킹(필요 시)
+                // 정확 시킹(필요 시)
                 if d.src_pos_samples != src_begin {
                     if let Err(_) = seek_decoder_to_src_samples(d, src_begin) {
                         // 실패: 디코더 폐기 + 무음으로 메우고 다음 루프
-                        *dec = None;
-                        let wrote = push_silence(prod, can_write.min(frames_need));
-                        produced_total += wrote;
-                        pos += wrote as u64;
-                        frames_need = frames_need.saturating_sub(wrote);
-                        continue;
+                        *dec = None; //디코더 폐기
+                        let wrote = push_silence(prod, can_write.min(frames_need)); //무음으로 채우기
+                        produced_total += wrote; //생산량 누적
+                        pos += wrote as u64; // 진행 시킴
+                        frames_need = frames_need.saturating_sub(wrote); // 남은 필요량 감소
+                        continue; //다음 루프
                     }
                 }
 
-                // (4) 디코드/리샘플
+                // 디코드/리샘플
                 // 위에서 정확 시킹을 했으므로, decode 쪽에서 추가 스킵 없게 src_begin=0 전달
                 match decode_resample_into_ring(d, can_write, engine_sr, prod, 0, tempo_ratio) {
                     Ok(wrote) if wrote > 0 => {
@@ -490,9 +519,8 @@ pub fn fill_track_once(
 // -------------------------
 // 디코더 열기
 // -------------------------
-
 fn open_decoder_for(path: &str) -> Result<DecoderState, String> {
-    let file = File::open(Path::new(path)).map_err(|e| e.to_string())?;
+    let file = File::open(Path::new(path)).map_err(|e| e.to_string())?; //파일 열기
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     //Symphonia가 읽을 수 있는 미디어 소스 래퍼 파일/메모리/커서 등 가진 집합체 / Default 는 옵션값들
 
@@ -542,10 +570,9 @@ fn open_decoder_for(path: &str) -> Result<DecoderState, String> {
     })
 }
 
-// -------------------------
-// 디코드→리샘플→링버퍼 push (정확시킹 대신 프레임 스킵)
-// -------------------------
-
+//-------------------------
+// 디코드 + 리샘플링 + 링버퍼 푸시
+//-------------------------
 fn decode_resample_into_ring(
     d: &mut DecoderState,
     out_frames: usize,
@@ -554,41 +581,46 @@ fn decode_resample_into_ring(
     src_begin: u64,
     tempo_ratio: f32,
 ) -> Result<usize, String> {
-    let mut wrote = 0usize;
+    let mut wrote = 0usize; //실제로 쓴 프레임 수
     let mut step = (d.src_sr as f32) / (engine_sr as f32); //디코더에서 덜읽어야할 sr 수치
-    step *= tempo_ratio.clamp(0.25, 4.0);
-    // 로컬 커서
+    step *= tempo_ratio.clamp(0.25, 4.0); //템포 비율 적용 (너무 극단적인 값은 방지)
+                                          // 로컬 커서
     let mut ch: usize = refill_packet(d)?; // 첫 패킷 적재 & 채널수 확보
     if ch == 0 {
+        //채널이 0이면
         return Ok(0);
     } // 채널이없으면 에러로
-    let mut si: usize = 0;
+    let mut si: usize = 0; //샘플버퍼내 현재 위치
 
     // A) src_begin 까지 프레임 스킵(정확 시킹 대체)
     while d.src_pos_samples < src_begin {
         //샘플에 현재위치를 트랙에 현재위치까지 이동시켜 맞춤
         let samples = d.sample_buf.samples(); //샘플 전체를 전달
         if si + ch <= samples.len() {
-            si += ch;
-            d.src_pos_samples += 1;
+            //현재 위치 + 채널수가 샘플 길이보다 작으면
+            si += ch; //현재 위치를 채널수만큼 이동
+            d.src_pos_samples += 1; //재생위치도 한칸 이동
         } else {
             //예외처리
-            ch = refill_packet(d)?;
-            si = 0;
+            ch = refill_packet(d)?; //다시 패키지 읽어온다
+            si = 0; //다시 초기화
             if d.sample_buf.samples().is_empty() {
-                return Ok(0);
+                //완전히 다출력했다면
+                return Ok(0); //EOF
             }
         }
     }
 
     // B) 선형보간 준비
     let mut s0 = match fetch_lr_once(d, &mut si, &mut ch)? {
-        Some(fr) => fr,
-        None => return Ok(0),
+        //현재 위치의 프레임
+        Some(fr) => fr,       //현재
+        None => return Ok(0), //EOF
     }; //현재
     let mut s1 = match fetch_lr_once(d, &mut si, &mut ch)? {
-        Some(fr) => fr,
-        None => return Ok(0),
+        //다음 위치의 프레임
+        Some(fr) => fr,       //다음
+        None => return Ok(0), //EOF
     }; //다음
     let mut frac = 0.0f32; //s0 , s1 에 정규화된 위치 0~1
 
@@ -596,17 +628,18 @@ fn decode_resample_into_ring(
     while wrote < out_frames {
         //총프레임 만큼 동작
         let out_l = (s0.0 + (s1.0 - s0.0) * frac).clamp(-1.0, 1.0); // 선형보간 계산법 A + (B - A) *frac
-        let out_r = (s0.1 + (s1.1 - s0.1) * frac).clamp(-1.0, 1.0);
-        let out_l = if out_l.is_finite() { out_l } else { 0.0 };
-        let out_r = if out_r.is_finite() { out_r } else { 0.0 };
+        let out_r = (s0.1 + (s1.1 - s0.1) * frac).clamp(-1.0, 1.0); // 선형보간 계산법 A + (B - A) *frac
+        let out_l = if out_l.is_finite() { out_l } else { 0.0 }; //무한대나 NaN 방지
+        let out_r = if out_r.is_finite() { out_r } else { 0.0 }; // 무한대나 NaN 방지
 
         if prod.push(out_l).is_err() {
+            // L
             break;
         } //링버퍼에 넣기 에러나면 종료
         if prod.push(out_r).is_err() {
             break;
         }
-        wrote += 1;
+        wrote += 1; // R
 
         frac += step; //step 읽어 나가야할 값
         while frac >= 1.0 {
@@ -614,13 +647,13 @@ fn decode_resample_into_ring(
             frac -= 1.0; // 1초 보다 작게 만들고
             if let Some(fr) = fetch_lr_once(d, &mut si, &mut ch)? {
                 //s1까지왔다면 s0을 s1로 새로 샘플가져와서 넣어주기
-                s0 = s1;
-                s1 = fr;
+                s0 = s1; // s0 ← s1
+                s1 = fr; // s1 ← 다음 프레임
             } else {
                 return Ok(wrote);
             }
         }
     }
 
-    Ok(wrote)
+    Ok(wrote) //실제로 쓴 프레임 수 반환
 }

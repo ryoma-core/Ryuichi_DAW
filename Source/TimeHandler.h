@@ -25,6 +25,6 @@ private:
     juce::Slider& playhead;
     AudioEngine& aEng;
     TimeLine::timeLineState& timeline;
-    bool isPlaying;
+    bool& isPlaying;
     uint64_t* subTime;
 };

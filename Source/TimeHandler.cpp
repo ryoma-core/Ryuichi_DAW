@@ -26,9 +26,12 @@ void TimeHandler::timerCallback()
     const auto pos = aEng.rust_get_pos();
     isPlaying = aEng.rust_get_is_playing();
     *subTime = pos;
-    timeline.sr = sr;
+    timeline.sr = static_cast<double>(sr);
+    if (playhead.getMaximum() < (double)pos) playhead.setRange(0.0, (double)pos * 1.1, 1.0);
+
     playhead.setValue((double)pos, juce::dontSendNotification);
-    if (isPlaying) {
-        aEng.rust_eng_tick();
-    }
+
+    // UI 갱신(트랙만)
+    if (auto* p = playhead.getParentComponent())
+        p->repaint(); // 또는 각 SubTrack만 repaint하도록 콜백 훅 쓰기
 }

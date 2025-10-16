@@ -15,10 +15,10 @@
 //==============================================================================
 AudioEngine::AudioEngine()
 {
-    TrackDatas* rust_track_0 =rust_audio_track_new(0);
-    TrackDatas* rust_track_1 = rust_audio_track_new(1);
-    TrackDatas* rust_track_2 = rust_audio_track_new(2);
-    TrackDatas* rust_track_3 = rust_audio_track_new(3);
+    TrackDatas* rust_track_0 =rust_audio_track_new();
+    TrackDatas* rust_track_1 = rust_audio_track_new();
+    TrackDatas* rust_track_2 = rust_audio_track_new();
+    TrackDatas* rust_track_3 = rust_audio_track_new();
     Engine* raw = rust_audio_engine_new(rust_track_0, rust_track_1, rust_track_2, rust_track_3);
     if (!raw) {
         rust_audio_track_free(rust_track_0);
@@ -55,11 +55,6 @@ void AudioEngine::resized()
 
 }
 
-void AudioEngine::rust_string_delete(char* s)
-{
-    rust_free_string(s);
-}
- 
 void AudioEngine::rust_start_sound(bool bstart)
 {
     if (bstart)
@@ -74,10 +69,6 @@ void AudioEngine::rust_start_sound(bool bstart)
     }
 }
 
-void AudioEngine::rust_eng_tick()
-{
-    rust_audio_tick(eng.get());
-}
 
 
 bool AudioEngine::rust_file_update(int32_t number, const char* path, uint64_t tl_start, uint64_t tl_len, uint32_t src)
@@ -116,12 +107,6 @@ bool AudioEngine::rust_pan_update(float pan, int tracknum)
 bool AudioEngine::rust_bpm_update(float bpm)
 {
     return rust_sound_bpm_update(eng.get(),bpm);
-}
-
-bool AudioEngine::rust_vst3_execution(const char* path_utf8)
-{
-
-    return false;
 }
 
 uint64_t AudioEngine::rust_get_pos()
@@ -182,36 +167,31 @@ void AudioEngine::rust_sample_stop()
 
 void AudioEngine::rust_save_wav()
 {
-    // 1) Ãâ·Â ÆÄÀÏ: ¹ÙÅÁÈ­¸é/Ryuicni.wav
     juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
         .getChildFile("Ryuicni.wav");
     outFile.deleteFile();
 
-    // 2) »óÅÂ ¹é¾÷ + ÀåÄ¡ Á¤Áö
     const bool     wasPlaying = rust_get_is_playing();
     const uint64_t prevPos = rust_get_pos();
     if (host_) host_->stop();
 
-    // 3) ·»´õ ÆÄ¶ó¹ÌÅÍ
     const uint32_t sr = juce::jmax<uint32_t>(44100u, rust_get_out_sr());
     const uint32_t block = juce::jmax<uint32_t>(256u, rust_get_out_bs());
     const uint64_t songFrames = rust_project_length_frames(eng.get());
 
-    // 4) ¿ÀÇÁ¶óÀÎ ÁØºñ (ÇÃ·¯±×ÀÎ Ã¼ÀÎ)
     if (!host_ || !host_->prepareForOffline((double)sr, (int)block)) {
         DBG("[Export] offline prepare failed");
         if (host_) host_->start();
         return;
     }
     const int latency = juce::jmax(0, host_->getTotalLatencySamples());
-    const uint64_t tailFrames = (uint64_t)latency; // Ã¼ÀÎ µå·¹ÀÎ º¸Àå (ÇÊ¿ä½Ã Ãß°¡ tailSec ´õÇØµµ µÊ)
+    const uint64_t tailFrames = (uint64_t)latency; 
 
-    // 5) ¿£Áø Á¤·Ä
     rust_engine_set_sr(eng.get(), sr);
     rust_set_play_time(0);
-    rust_start_sound(true); // ¿öÄ¿°¡ RB Ã¤¿ì°Ô
+    rust_start_sound(true);
 
-    // 6) WAV writer
+ 
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::FileOutputStream> fos(outFile.createOutputStream());
     if (!fos || !fos->openedOk()) {
@@ -235,15 +215,13 @@ void AudioEngine::rust_save_wav()
         return;
     }
 
-    // 7) ¹öÆÛµé
-    std::vector<float> inter(block * 2, 0.0f);       // ¿£Áø ÀÎÅÍ¸®ºêµå
-    juce::AudioBuffer<float> buf(2, (int)block);     // ÇÃ·¯±×ÀÎ ÀÔÃâ·Â
+    std::vector<float> inter(block * 2, 0.0f);       
+    juce::AudioBuffer<float> buf(2, (int)block); 
     juce::MidiBuffer midi;
 
-    // 8) ·¹ÅÏ½Ã Çìµå ½ºÅµ »óÅÂ
     int headLeft = latency;
 
-    // 9) ·»´õ ·çÇÁ: ³ë·¡ ÀüÃ¼ + ·¹ÅÏ½Ã Å×ÀÏ
+
     uint64_t rendered = 0;
     const uint64_t targetFrames = songFrames + tailFrames;
 
@@ -251,11 +229,9 @@ void AudioEngine::rust_save_wav()
     {
         const uint32_t todo = (uint32_t)juce::jmin<uint64_t>(block, targetFrames - rendered);
 
-        // 9-1) ¿£Áø¿¡¼­ ÀÎÅÍ¸®ºêµå »Ì±â
         size_t got = rust_render_interleaved(eng.get(), inter.data(), (size_t)todo, 2);
         if (got == 0) { juce::Thread::sleep(1); continue; }
 
-        // 9-2) interleaved ¡æ planar
         buf.clear();
         float* L = buf.getWritePointer(0);
         float* R = buf.getWritePointer(1);
@@ -264,11 +240,10 @@ void AudioEngine::rust_save_wav()
             R[i] = inter[i * 2 + 1];
         }
 
-        // 9-3) ÇÃ·¯±×ÀÎ Ã¼ÀÎ Ã³¸®
         midi.clear();
         host_->processChainOffline(buf, midi);
 
-        // 9-4) Çìµå ·¹ÅÏ½Ã ¸¸Å­ ½ºÅµ
+
         int writeOffset = 0;
         int writeCount = (int)got;
         if (headLeft > 0) {
@@ -284,7 +259,6 @@ void AudioEngine::rust_save_wav()
         rendered += got;
     }
 
-    // 10) Á¤¸®/º¹±¸
     writer.reset();
     rust_start_sound(false);
     rust_set_play_time(prevPos);

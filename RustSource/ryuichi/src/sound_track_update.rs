@@ -1,8 +1,5 @@
-use crate::unit::*;
 use crate::Clip;
-use crate::Duration;
 use crate::Engine;
-use crate::Instant;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
@@ -273,20 +270,6 @@ pub extern "C" fn rust_transport_is_playing(engine: *const Engine) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_vst3_open(p: *const std::os::raw::c_char) -> bool {
-    if p.is_null() {
-        return false;
-    }
-
-    let s = unsafe { std::ffi::CStr::from_ptr(p) };
-    let path = match s.to_str() {
-        Ok(v) => v.to_owned(),
-        Err(_) => return false,
-    };
-    true
-}
-
-#[no_mangle]
 pub extern "C" fn rust_audio_params_out_sr(engine: *mut Engine) -> u32 {
     if engine.is_null() {
         return 0;
@@ -307,22 +290,6 @@ pub extern "C" fn rust_engine_set_sr(engine: *mut Engine, sr: u32) {
     }
     let eng = unsafe { &*engine };
     eng.play_time_manager.set_sr(sr);
-}
-
-const AUTOREBUF_INTERVAL_SECS: u64 = 2;
-#[no_mangle]
-pub extern "C" fn rust_audio_tick(engine: *mut Engine) {
-    if engine.is_null() {
-        return;
-    }
-    let eng = unsafe { &mut *engine };
-
-    // if eng.has_pending_bpm.swap(false, Ordering::AcqRel) {
-    //     let b_bits = eng.pending_bpm.load(Ordering::Acquire);
-    //     eng.real_time_params.bpm.store(b_bits, Ordering::Relaxed);
-    //     eng.last_auto_rebuffer_at = Instant::now();
-    //     return;
-    // }
 }
 
 #[no_mangle]
