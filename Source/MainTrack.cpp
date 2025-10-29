@@ -58,6 +58,7 @@ MainTrack::MainTrack()
     }
 #pragma endregion
 #pragma region playhead
+    playhead.setScrollWheelEnabled(false);
     playhead.setRange(0.0, 48000.0 * 600.0, 1.0);
     playhead.setSliderStyle(juce::Slider::LinearBar);
     playhead.setColour(juce::Slider::trackColourId, juce::Colours::whitesmoke);

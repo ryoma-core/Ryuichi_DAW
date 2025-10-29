@@ -121,6 +121,8 @@ pub extern "C" fn rust_render_interleaved(
     if ch != 2 {
         return 0;
     }
+    let mut zeros = 0u64;
+    let mut had_underrun = false;
 
     let out: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(out_ptr, frames * ch) };
     out.fill(0.0);
@@ -202,21 +204,25 @@ pub extern "C" fn rust_render_interleaved(
                     Ok(v) => v,
                     Err(_) => {
                         underrun_any = true;
-                        0.0
+                        had_underrun = true; 
+                        zeros += 1;
+                         0.0
                     }
                 };
                 let r = match cons.pop() {
                     Ok(v) => v,
                     Err(_) => {
                         underrun_any = true;
-                        0.0
+                        had_underrun = true;
+                         zeros += 1;
+                          0.0
                     }
                 };
 
                 let i = f * 2;
                 unsafe {
-                    *out.get_unchecked_mut(i) += l * gl;
-                    *out.get_unchecked_mut(i + 1) += r * gr;
+                    *out.get_unchecked_mut(i) += l * gl; // L
+                    *out.get_unchecked_mut(i + 1) += r * gr; // R
                 }
             }
         }
@@ -224,6 +230,12 @@ pub extern "C" fn rust_render_interleaved(
             let (_, cv) = &*eng.thread_wait;
             cv.notify_all();
         }
+    }
+    if had_underrun {
+        eng.underrun_callbacks.fetch_add(1, Ordering::Relaxed);
+    }
+    if zeros > 0 {
+        eng.underrun_samples.fetch_add(zeros, Ordering::Relaxed);
     }
     // 트랜스포트 진행
     eng.play_time_manager.advance_frames(frames as u64);
@@ -346,7 +358,6 @@ pub fn seek_decoder_to_src_samples(dec: &mut DecoderState, src_off: u64) -> anyh
     Ok(())
 }
 
-
 // -------------------------
 // 디코더 준비
 // -------------------------
@@ -382,7 +393,6 @@ fn ensure_decoder_for(dec: &mut Option<DecoderState>, clip: &Clip) -> bool {
         }
     }
 }
-
 
 // -------------------------
 // 트랙 크립 계산 및 디코드/리샘플/링버퍼 푸시

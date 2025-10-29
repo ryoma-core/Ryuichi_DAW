@@ -52,6 +52,10 @@ extern "C"
 
     uint64_t rust_project_length_frames(Engine* engine);
     double rust_project_length_seconds(Engine* engine);
+
+    uint64_t rust_metrics_get_xrun_callbacks(Engine* engine);
+    uint64_t rust_metrics_get_xrun_zero_samples(Engine* engine);
+    void rust_metrics_reset(Engine* engine);
 }
 struct EngineDeleter {
     void operator()(Engine* e) const noexcept {
@@ -90,6 +94,9 @@ public:
     void rust_sample_play();
     void rust_sample_stop();
     void rust_save_wav();
+    uint64_t getXrunCallbacks() const;
+    uint64_t getXrunZeroSamples() const;
+    void     resetMetrics();
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_0;
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_1;
     std::shared_ptr<SoundCore::soundVecterData> audioTrack_2;

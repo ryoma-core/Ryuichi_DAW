@@ -269,3 +269,18 @@ void AudioEngine::rust_save_wav()
 
     DBG("[Export] DONE -> " + outFile.getFullPathName());
 }
+
+uint64_t AudioEngine::getXrunCallbacks() const
+{
+    return  eng ? rust_metrics_get_xrun_callbacks(eng.get()) : 0;
+}
+
+uint64_t AudioEngine::getXrunZeroSamples() const
+{
+    return eng ? rust_metrics_get_xrun_zero_samples(eng.get()) : 0;
+}
+
+void AudioEngine::resetMetrics()
+{
+    if (eng) rust_metrics_reset(eng.get());
+}

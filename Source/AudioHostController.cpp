@@ -42,7 +42,7 @@ void AudioHostController::audioDeviceAboutToStart(juce::AudioIODevice* device)
     this->sampleRate_ = device ? device->getCurrentSampleRate() : 0.0;  //get SR
     this->blockSize_ = device ? device->getCurrentBufferSizeSamples() : 0; //get BS
     this->outCh_ = device ? device->getActiveOutputChannels().countNumberOfSetBits() : 0;
-
+    lastTick = 0;
     if (outCh_ <= 0) outCh_ = 2;
 
     this->interBuf_.resize((size_t)this->blockSize_ * (size_t)outCh_);
@@ -82,6 +82,7 @@ void AudioHostController::audioDeviceStopped()
     this->outCh_ = 0;
     this->interBuf_.clear();
     this->interBuf_.shrink_to_fit(); //resize
+    lastTick = 0;
 }
 
 void AudioHostController::audioDeviceIOCallbackWithContext(
@@ -92,6 +93,33 @@ void AudioHostController::audioDeviceIOCallbackWithContext(
     int numSamples,
     const juce::AudioIODeviceCallbackContext&)
 {
+    auto now = juce::Time::getHighResolutionTicks();
+    if (lastTick != 0 && sampleRate_ > 0.0 && blockSize_ > 0) {
+        const double dt = double(now - lastTick) / double(juce::Time::getHighResolutionTicksPerSecond()); // s
+        const double ideal = double(numSamples) / sampleRate_;
+        const double j_ms = std::abs(dt - ideal) * 1000.0;
+
+        // lock-free 링버퍼 스타일로 누적
+        size_t i = jitterIdx.fetch_add(1, std::memory_order_relaxed) % jitterBuf.size();
+        jitterBuf[i] = j_ms;
+        size_t n = jitterCount.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        // 일정 주기로 p95 근사 업데이트 (부하 적게)
+        if ((i % 64) == 0) {
+            const size_t take = std::min(n, jitterBuf.size());
+            // 로컬 복사 후 nth_element
+            std::vector<double> tmp;
+            tmp.reserve(take);
+            for (size_t k = 0; k < take; ++k) tmp.push_back(jitterBuf[k]);
+            if (!tmp.empty()) {
+                size_t p = size_t(std::floor(tmp.size() * 0.95));
+                std::nth_element(tmp.begin(), tmp.begin() + p, tmp.end());
+                jitterP95Ms.store(tmp[p], std::memory_order_relaxed);
+            }
+        }
+    }
+    lastTick = now;
+
     juce::ScopedNoDenormals guard; //is cpu poor performance prevention. just Denormal Numbers is cpu calculation be heavy so occur Denormal Numbers the 0 return
     if (numSamples <= 0 || numOutputChannels <= 0 || outputChannelData == nullptr) return; //nullpoint return;
 

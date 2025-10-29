@@ -98,5 +98,7 @@ private:
     bool loadVST3FromFile(const juce::String& path, double sampleRate, int blockSize);
     bool DefaultVST3FromFile(std::optional<DefaultPlugin> &plugin, const juce::String& path, double sampleRate, int blockSize);
 #pragma endregion 
+    juce::Label perfLabel;
+    int perfTick = 0;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

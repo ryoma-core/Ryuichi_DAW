@@ -49,8 +49,8 @@ public:
     explicit AudioHostController(renderFn fn = {});
     ~AudioHostController() override;
     
-    bool start();   // ±âº» ÀåÄ¡ ¿­±â + ÄÝ¹é µî·Ï
-    void stop();    // ÄÝ¹é Á¦°Å + ÀåÄ¡ ´Ý±â
+    bool start();   
+    void stop();    
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
@@ -77,20 +77,30 @@ public:
     void processChainOffline(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi);
     void releaseOffline();
     int  getTotalLatencySamples() const;
+    inline double getJitterP95Ms() const { return jitterP95Ms.load(std::memory_order_relaxed); }
 private:
     juce::AudioDeviceManager dm;
 
-    renderFn render_;                 // »ý¼ºÀÚ¿¡¼­ ¹ÞÀº ·»´õ ÄÝ¹é º¸°ü
+    renderFn render_;                 
     double sampleRate_ = 0.0;
     int blockSize_ = 0;
     int outCh_ = 0;
     std::vector<uint8_t> bypass_;
 
-    // interleaved ÀÓ½Ã ¹öÆÛ(ÄÝ¹é¸¶´Ù ÀçÇÒ´ç ÇÇÇÏ·Á°í º¸°ü)
+    // interleaved
     std::vector<float> interBuf_;
 
-    juce::AudioBuffer<float> procBuf_;                  // ÇÃ·¯±×ÀÎ Ã³¸®¿ë ¹öÆÛ
-    juce::MidiBuffer midi_;                             // (Áö±ÝÀº ºñ¿ò)
-    juce::SpinLock plugLock_;                           // Ã¼ÀÎ ±³Ã¼ º¸È£
+    juce::AudioBuffer<float> procBuf_;                  
+    juce::MidiBuffer midi_;                             
+    juce::SpinLock plugLock_;                      
     std::vector<juce::AudioProcessor*> plugs_;
+
+    // Jitter metrics
+    std::atomic<double> jitterP95Ms{ 0.0 };
+    juce::int64 lastTick = 0;
+
+    // ������ ������ (�ֱ� 512��)
+    std::array<double, 512> jitterBuf{};
+    std::atomic<size_t>     jitterCount{ 0 };
+    std::atomic<size_t>     jitterIdx{ 0 };
 };

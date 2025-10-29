@@ -281,6 +281,10 @@ MainComponent::MainComponent()
         audioEngine->rust_save_wav();
         };
 #pragma endregion 
+    audioEngine->rust_start_sound(false);
+    addAndMakeVisible(perfLabel);
+    perfLabel.setJustificationType(juce::Justification::centredLeft);
+    perfLabel.setBounds(600, 160, 600, 22);
 }
 MainComponent::~MainComponent()
 {
@@ -346,7 +350,36 @@ void MainComponent::paint (juce::Graphics& g)
 }
 void MainComponent::update()
 {
+    // 60fps 기준 15프레임마다 갱신 => 약 4Hz
+    if (++perfTick < 15) return;
+    perfTick = 0;
 
+    if (!audioEngine) return;
+
+    // 엔진 XRUN (Rust 쪽 원자카운터)
+    const uint64_t xcb = audioEngine->getXrunCallbacks();
+    const uint64_t xzero = audioEngine->getXrunZeroSamples();
+
+    // 지터 p95 (Host 쪽): AudioHostController에 getter 있어야 함
+    double j95 = 0.0;
+    if (audioEngine->host_)
+    {
+        // AudioHostController.h 에
+        //   double getJitterP95Ms() const { return jitterP95Ms.load(std::memory_order_relaxed); }
+        // 가 있어야 함
+        j95 = audioEngine->host_->getJitterP95Ms();
+    }
+
+    const auto sr = audioEngine->rust_get_out_sr();
+    const auto bs = audioEngine->rust_get_out_bs();
+
+    perfLabel.setText(
+        juce::String::formatted("SR %u  BS %u  |  XRUN(cb) %llu  zero %llu  |  jitter p95 %.2f ms",
+            sr, bs,
+            (unsigned long long) xcb,
+            (unsigned long long) xzero,
+            j95),
+        juce::dontSendNotification);
 }
 void MainComponent::resized()
 {

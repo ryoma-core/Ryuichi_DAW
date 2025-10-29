@@ -307,3 +307,23 @@ pub extern "C" fn rust_project_length_seconds(engine: *const Engine) -> f64 {
     let eng = unsafe { &*engine };
     eng.project_length_seconds()
 }
+
+#[no_mangle]
+pub extern "C" fn rust_metrics_get_xrun_callbacks(eng: *mut Engine) -> u64 {
+    if eng.is_null() { return 0; }
+    unsafe { (&*eng).underrun_callbacks.load(Ordering::Relaxed) }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_metrics_get_xrun_zero_samples(eng: *mut Engine) -> u64 {
+    if eng.is_null() { return 0; }
+    unsafe { (&*eng).underrun_samples.load(Ordering::Relaxed) }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_metrics_reset(eng: *mut Engine) {
+    if eng.is_null() { return; }
+    let e = unsafe { &*eng };
+    e.underrun_callbacks.store(0, Ordering::Relaxed);
+    e.underrun_samples.store(0, Ordering::Relaxed);
+}

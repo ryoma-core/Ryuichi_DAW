@@ -3,12 +3,11 @@ pub use unit::*;
 mod sound_track_update;
 pub use sound_track_update::*;
 mod sound_play;
-pub use sound_play::*;
-use std::os::raw::c_char;
 use crossbeam_utils::atomic::AtomicCell;
+pub use sound_play::*;
 use std::collections::BTreeMap;
+use std::os::raw::c_char;
 use std::sync::Condvar;
-
 
 fn bump_priority_worker_thread() {
     unsafe {
@@ -18,7 +17,8 @@ fn bump_priority_worker_thread() {
 }
 
 fn pin_to_core(core_id: usize) {
-    if let Some(core) = core_affinity::get_core_ids().and_then(|v| v.get(core_id).cloned()) //코어 ID 유효성 검사
+    if let Some(core) = core_affinity::get_core_ids().and_then(|v| v.get(core_id).cloned())
+    //코어 ID 유효성 검사
     {
         let _ = core_affinity::set_for_current(core); //현재 스레드를 해당 코어에 고정
     }
@@ -152,7 +152,7 @@ pub struct Sample {
 }
 struct SfxState {
     sample: Arc<Sample>,
-    frame: usize,           // 현재 재생 위치 0..nframes
+    frame: usize, // 현재 재생 위치 0..nframes
 }
 
 pub struct Engine {
@@ -174,7 +174,9 @@ pub struct Engine {
     pending_bpm: AtomicU32,
     has_pending_bpm: AtomicBool,
     pad_sample: AtomicCell<Option<Arc<Sample>>>,
-    sfx_state: Mutex<Option<SfxState>>, 
+    sfx_state: Mutex<Option<SfxState>>,
+    underrun_callbacks: AtomicU64, // 콜백 단위 XRUN
+    underrun_samples: AtomicU64,   // 0.0로 때운 샘플 수(채널단위)
 }
 impl Engine {
     fn new(mut tk: Vec<TrackConfig>) -> Self {
@@ -264,7 +266,6 @@ impl Engine {
                             if p.is_full() {
                                 continue;
                             }
-
                         }
 
                         // 전역 일시정지 게이트 (seek 등)
@@ -272,7 +273,8 @@ impl Engine {
                             let (lock, cvar) = &*wait_c; //전체 대기
                             let mut guard = lock.lock().unwrap(); //뮤텍스 잠금
                             guard = cvar.wait_while(guard, |waiting| *waiting).unwrap(); //대기
-                            if stop_c.load(Ordering::Relaxed) { //종료 신호
+                            if stop_c.load(Ordering::Relaxed) {
+                                //종료 신호
                                 return;
                             }
                         }
@@ -281,18 +283,22 @@ impl Engine {
                         {
                             let (mx, cv) = &*wait_c; //전체 대기
                             let mut g = mx.lock().unwrap(); //뮤텍스 잠금
-                            while { // 1차 Prod 꽉 찼으면 대기
+                            while {
+                                // 1차 Prod 꽉 찼으면 대기
                                 //while condition
-                                if let Ok(p) = prod_c[track_idx].lock()  //잠깐만 잡고
+                                if let Ok(p) = prod_c[track_idx].lock()
+                                //잠깐만 잡고
                                 {
                                     p.is_full() //꽉 찼으면
                                 } else {
-                                    true    //잠금 실패하면 안전하게 대기
+                                    true //잠금 실패하면 안전하게 대기
                                 }
-                            } && !stop_c.load(Ordering::Acquire) //종료 신호 아니면
-                            { //while inner
-                                g = cv  //조건변수로 짧게 대기
-                                    .wait_timeout(g, std::time::Duration::from_millis(1))  // 1ms 대기
+                            } && !stop_c.load(Ordering::Acquire)
+                            //종료 신호 아니면
+                            {
+                                //while inner
+                                g = cv //조건변수로 짧게 대기
+                                    .wait_timeout(g, std::time::Duration::from_millis(1)) // 1ms 대기
                                     .unwrap() //실패시 패닉
                                     .0; //반환값에서 guard만 취함
                             }
@@ -302,10 +308,10 @@ impl Engine {
                             break;
                         }
 
-                        let engine_sr = playing_c.sr();
+                        let engine_sr = playing_c.sr(); //엔진 샘플링 레이트
 
-                        let mut per_iter = CHUNK_DECODE;
-                        let mut produced_total = 0usize;
+                        let mut per_iter = CHUNK_DECODE; //한 번에 최대 생산량
+                        let mut produced_total = 0usize; //이번 트랙에서 생산한 총량
                         loop {
                             if stop_c.load(Ordering::Acquire) {
                                 break;
@@ -313,34 +319,40 @@ impl Engine {
 
                             // RB1 꽉 찼으면 다음 트랙
                             let full = if let Ok(p) = prod_c[track_idx].lock() {
-                                p.is_full()
+                                p.is_full() //꽉 찼으면
                             } else {
+                                //잠금 실패하면
                                 true
                             };
                             if full {
-                                break;
+                                //꽉 찼으면
+                                break; //다음 트랙
                             }
 
                             // tr/dec/prod 잠깐만 잡고 최대 per_iter 만큼 생산
                             let n = {
                                 let mut tr = match rt_c[track_idx].lock() {
-                                    Ok(g) => g,
-                                    Err(_) => continue,
+                                    //트랙 타임라인
+                                    Ok(g) => g,         //뮤텍스 잠금
+                                    Err(_) => continue, //실패시 다음 트랙
                                 };
                                 let mut dc = match dec_c[track_idx].lock() {
-                                    Ok(g) => g,
-                                    Err(_) => continue,
+                                    //디코더 상태
+                                    Ok(g) => g,         //뮤텍스 잠금
+                                    Err(_) => continue, //실패시 다음 트랙
                                 };
                                 let mut pd = match prod_c[track_idx].lock() {
-                                    Ok(g) => g,
-                                    Err(_) => continue,
+                                    //1차 링버퍼 프로듀서
+                                    Ok(g) => g,         //뮤텍스 잠금
+                                    Err(_) => continue, //실패시 다음 트랙
                                 };
                                 let tempo_ratio = {
-                                    let bpm_bits = params_c.bpm.load(Ordering::Relaxed);
-                                    let bpm = f32::from_bits(bpm_bits);
-                                    (bpm / BASE_BPM).clamp(0.25, 4.0)
+                                    //템포 비율
+                                    let bpm_bits = params_c.bpm.load(Ordering::Relaxed); //BPM
+                                    let bpm = f32::from_bits(bpm_bits); //f32로 변환
+                                    (bpm / BASE_BPM).clamp(0.25, 4.0) //0.25~4.0 사이로 제한
                                 };
-                                let tpos = playing_c.pos_frames();
+                                let tpos = playing_c.pos_frames(); //현재 재생 위치
                                 match fill_track_once(
                                     &mut *tr,
                                     &mut *dc,
@@ -397,6 +409,8 @@ impl Engine {
             has_pending_bpm: AtomicBool::new(false),
             pad_sample: AtomicCell::new(None),
             sfx_state: Mutex::new(None),
+            underrun_callbacks: AtomicU64::new(0),
+            underrun_samples: AtomicU64::new(0),
         };
     }
 
@@ -668,9 +682,9 @@ impl Engine {
 
         Some(Arc::from(out))
     }
-    
+
     pub fn project_end_frames(&self) -> u64 {
-        let mut end : u64 = 0;
+        let mut end: u64 = 0;
         for tr_mx in self.track_run_time.iter() {
             if let Ok(tr) = tr_mx.lock() {
                 for c in tr.clips.values() {
@@ -691,7 +705,6 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-
         self.thread_stop.store(true, Ordering::Relaxed);
         self.wake_workers();
 
@@ -781,11 +794,15 @@ pub extern "C" fn rust_request_load_single_sample(
 
 #[no_mangle]
 pub extern "C" fn rust_pad_note_on(engine: *mut Engine) -> bool {
-    if engine.is_null() { return false; }
+    if engine.is_null() {
+        return false;
+    }
     let eng = unsafe { &mut *engine };
 
     // pad_sample 스냅샷(Arc 복사만)
-    let Some(sample_arc) = eng.pad_sample.take() else { return false; };
+    let Some(sample_arc) = eng.pad_sample.take() else {
+        return false;
+    };
     let sample = sample_arc.clone();
     eng.pad_sample.store(Some(sample_arc)); // 재사용 가능하게 되돌리기
 
@@ -800,10 +817,14 @@ pub extern "C" fn rust_pad_note_on(engine: *mut Engine) -> bool {
 
 #[no_mangle]
 pub extern "C" fn rust_pad_note_off(engine: *mut Engine) -> bool {
-    if engine.is_null() { return false; }
+    if engine.is_null() {
+        return false;
+    }
     let eng = unsafe { &mut *engine };
     if let Ok(mut st) = eng.sfx_state.lock() {
         *st = None;
         true
-    } else { false }
+    } else {
+        false
+    }
 }
