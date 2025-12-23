@@ -111,7 +111,7 @@
 ---
 
 ### 🧭 타임라인/트랜스포트 상태
-**경로:** [Source/TimeLineState/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/TimeLineState.h) 
+**경로:** [Source/TimeLineState/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/TimeLineState.h)  
 💡 기능: 재생/정지/플레이헤드/BPM 등 시간 상태 관리
 
 ---
