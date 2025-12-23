@@ -189,24 +189,3 @@ Configuration-specific Linker Flags -> Rust 릴리즈 빌드하여 생성된 DLL
 ```
 
 ---
-## 🔗 C++ ↔ Rust FFI 헤더
-
-AudioEngine.h
-```
-#pragma once
-#include <cstdint>
-
-extern "C" {
-    struct TrackConfig;
-    struct Engine;
-
-    TrackDatas* rust_audio_track_new(std::int32_t number);
-    void rust_audio_track_free(TrackDatas* track);
-
-    Engine* rust_audio_engine_new(TrackDatas* track0, TrackDatas* track1, TrackDatas* track2, TrackDatas* track3);
-    void rust_audio_engine_free(Engine* engine);
-}
-```
-Rust 쪽에는 동일 시그니처로 #[no_mangle] extern "C" 함수가 구현돼 있어야 합니다.
-
----
