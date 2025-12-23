@@ -96,7 +96,7 @@
 ---
 
 ### 🔗 C++ ↔ Rust FFI 브리지
-**경로:** `Source/AudioEngine/`  
+**경로:** [Source/AudioEngine/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioEngine.h)  
 💡 기능: Rust DLL 엔진 핸들 생성/해제 및 호출 경계 유지  
 📌 주요 API(예시):
 - `rust_audio_track_new / free`
@@ -105,25 +105,25 @@
 ---
 
 ### 🧠 파라미터 저장소
-**경로:** `Source/soundData/`  
+**경로:** [Source/soundData/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/soundData.h)  
 💡 기능: UI에서 변경된 파라미터를 오디오 콜백이 읽을 수 있게 제공
 
 ---
 
 ### 🧭 타임라인/트랜스포트 상태
-**경로:** `Source/TimeLineState/`  
+**경로:** [Source/TimeLineState/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/TimeLineState.h) 
 💡 기능: 재생/정지/플레이헤드/BPM 등 시간 상태 관리
 
 ---
 
 ### 🌊 클립/파형 데이터
-**경로:** `Source/ClipData/`  
+**경로:** [Source/ClipData/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/ClipData.h)  
 💡 기능: 파형 데이터 생성/캐시 및 타임라인 표시용 데이터 제공
 
 ---
 
 ### 🧩 VST3 관리
-**경로:** `Source/GUI/VST3Window/`  
+**경로:** [Source/GUI/VST3Window/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
 💡 기능: VST3 플러그인 로딩 및 에디터 창 관리
  
 
