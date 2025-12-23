@@ -22,12 +22,9 @@
 
 <hr/>
 
-## ✨ 특징
-- C++ ↔ Rust **직접 FFI** (`#[no_mangle] extern "C"`)
-- **rtrb**(lock-free ring buffer)로 트랙별 파이프라인
-- **symphonia**로 디코딩, **JUCE**로 출력
-- 볼륨/뮤트/팬 파라미터, 타임라인/클립 구조
-- 언더런 튜닝을 위한 **프레임 묶음 크기(FILL_FRAMES / CHUNK_FRAMES)** 및 **버퍼 용량(CAPACITY_SAMPLES)** 노출
+## ✨ 프로젝트 설명
+- Digital Audio Workstation (DAW 샘플 작곡 프로그램)
+- 실시간 출력, 볼륨/뮤트/팬 파라미터, VST플러그인
 
 ---
 
