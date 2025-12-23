@@ -128,7 +128,7 @@
  
 ---
 
-### 🎧 AppRoot
+### 🏠 MainComponent (App Root)
 **경로:** [Source/MainComponent/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/MainComponent.h)  
 💡 기능: 앱의 루트 컴포넌트로서 UI/오디오/상태 객체를 초기화하고 연결  
 📌 포인트:
