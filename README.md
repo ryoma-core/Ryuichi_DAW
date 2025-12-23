@@ -1,4 +1,4 @@
-<h1 align="center">Ryuichi DAW — JUCE × Rust (FFI)</h1>
+<h1 align="center">Ryuichi DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)</h1>
 
 <p align="center">
   <em>JUCE 기반 C++ UI + Rust 오디오 엔진(DLL) — 디코딩 · VST3 · 믹싱 · 출력(JUCE)</em><br/>
