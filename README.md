@@ -123,9 +123,17 @@
 ---
 
 ### 🧩 VST3 관리
-**경로:** [Source/GUI/VST3Window/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
+**경로:** [Source/VST3Window/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
 💡 기능: VST3 플러그인 로딩 및 에디터 창 관리
  
+---
+
+### 🎧 AppRoot
+**경로:** [Source/MainComponent/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/MainComponent.h)  
+💡 기능: 전체적인 객체 관리  
+📌 포인트:
+- UI 및 엔진 연결
+
 ---
 
 ## 4. 기술스택
