@@ -87,8 +87,8 @@
 
 ## 3. 주요 모듈
 ### 🎧 실시간 오디오 출력 (JUCE AudioCallback)
-**경로:** [Source/AudioHostController/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioHostController.h)  
-💡 기능: 오디오 디바이스 콜백에서 출력 버퍼를 실시간으로 채움  
+**파일:** [Source/AudioHostController.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioHostController.h)  
+💡 기능: 오디오 디바이스 콜백에서 출력 버퍼를 실시간으로 채움 (실시간 엔트리 포인트)  
 📌 포인트:
 - 실시간 구간(락/할당/IO 금지)
 - 파라미터 스냅샷 반영(볼륨/팬/뮤트)
@@ -96,8 +96,8 @@
 ---
 
 ### 🔗 C++ ↔ Rust FFI 브리지
-**경로:** [Source/AudioEngine/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioEngine.h)  
-💡 기능: Rust DLL 엔진 핸들 생성/해제 및 호출 경계 유지  
+**파일:** [Source/AudioEngine.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioEngine.h)  
+💡 기능: Rust DLL 엔진 핸들 생성/해제 및 호출 경계 유지 (ABI 경계 고정)  
 📌 주요 API(예시):
 - `rust_audio_track_new / free`
 - `rust_audio_engine_new / free`
@@ -105,31 +105,31 @@
 ---
 
 ### 🧠 파라미터 저장소
-**경로:** [Source/soundData/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/soundData.h)  
-💡 기능: UI에서 변경된 파라미터를 오디오 콜백이 읽을 수 있게 제공
+**파일:** [Source/soundData.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/soundData.h)  
+💡 기능: UI에서 변경된 파라미터를 오디오 콜백이 읽을 수 있게 제공 (상태 저장소)
 
 ---
 
 ### 🧭 타임라인/트랜스포트 상태
-**경로:** [Source/TimeLineState/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/TimeLineState.h)  
-💡 기능: 재생/정지/플레이헤드/BPM 등 시간 상태 관리
+**파일:** [Source/TimeLineState.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/TimeLineState.h)  
+💡 기능: 재생/정지/플레이헤드/BPM 등 시간 상태 관리 (시간의 단일 진실)
 
 ---
 
 ### 🌊 클립/파형 데이터
-**경로:** [Source/ClipData/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/ClipData.h)  
+**파일:** [Source/ClipData.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/ClipData.h)  
 💡 기능: 파형 데이터 생성/캐시 및 타임라인 표시용 데이터 제공
 
 ---
 
 ### 🧩 VST3 관리
-**경로:** [Source/VST3Window/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
-💡 기능: VST3 플러그인 로딩 및 에디터 창 관리
- 
+**파일:** [Source/VSTWindows.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
+💡 기능: VST3 플러그인 로딩 및 에디터 창 관리 (플러그인 수명 + UI attach/detach)
+
 ---
 
 ### 🏠 MainComponent (App Root)
-**경로:** [Source/MainComponent/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/MainComponent.h)  
+**파일:** [Source/MainComponent.h](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/MainComponent.h)  
 💡 기능: 앱의 루트 컴포넌트로서 UI/오디오/상태 객체를 초기화하고 연결  
 📌 포인트:
 - 주요 UI 컴포넌트 생성 및 레이아웃(Track/Mixer/PlayBar 등)
