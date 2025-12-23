@@ -3,7 +3,7 @@
     <img src="UI_Image/64px-YouTube_full-color_icon_(2017).svg.png" alt="유튜브" width="40" style="vertical-align: middle;"/>
   </a>
   <span style="vertical-align: middle;">
-    Ryuichi DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)
+    Ryuichi MINI-DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)
   </span>
 </h1>
 
@@ -34,7 +34,7 @@
 ---
 
 ## 1. 프로젝트 소개
-> 이름만 “게임소개”고, 내용은 **DAW 소개**입니다.
+> Ryuichi MINI-DAW고, 내용은 **샘플 작곡 소프트웨어**입니다.
 
 ### 무엇을 할 수 있나
 - 오디오 클립을 트랙에 올리고 재생/정지
