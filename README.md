@@ -130,9 +130,12 @@
 
 ### 🎧 AppRoot
 **경로:** [Source/MainComponent/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/MainComponent.h)  
-💡 기능: 전체적인 객체 관리  
+💡 기능: 앱의 루트 컴포넌트로서 UI/오디오/상태 객체를 초기화하고 연결  
 📌 포인트:
-- UI 및 엔진 연결
+- 주요 UI 컴포넌트 생성 및 레이아웃(Track/Mixer/PlayBar 등)
+- 상태(TimeLineState/soundData)와 UI 이벤트 바인딩
+- AudioHostController/AudioEngine(FFI) 초기화 및 연결
+- 앱 종료 시 리소스 정리(엔진 핸들/free, 오디오 stop 등)
 
 ---
 
