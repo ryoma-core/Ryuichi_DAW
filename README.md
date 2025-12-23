@@ -1,4 +1,4 @@
-[![유튜브](UI_Image/64px-YouTube_full-color_icon_(2017).svg.png)]([youtube.com/watch?si=32UlkJYU6YiNE7Bl&v=Q7ig6vn-y4M&feature=youtu.be](https://www.youtube.com/watch?v=Q7ig6vn-y4M))
+[![유튜브](UI_Image/64px-YouTube_full-color_icon_(2017).svg.png)](https://www.youtube.com/watch?v=Q7ig6vn-y4M)
 <h1 align="center">Ryuichi DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)</h1>
 
 <p align="center">
