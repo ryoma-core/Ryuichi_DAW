@@ -22,8 +22,6 @@
 
 <hr/>
 
----
-
 ## 목차
 - [1. 프로젝트 소개](#1-프로젝트-소개)
 - [2. 프로젝트 개요](#2-프로젝트-개요)
@@ -168,7 +166,7 @@ C:\Ryuichi\Builds\VisualStudio2022\x64\Debug\App (또는 Release\App)
 
 ---
 
-## ⚙️ Rust 엔진 빌드(DLL)
+### ⚙️ Rust 엔진 빌드(DLL)
 - **Rust(cargo)** 설치
 <br/>
 Ryuichi\RustSource\ryuichi를 vscode를 통하여 폴더 Open 터미널을 통하여 
