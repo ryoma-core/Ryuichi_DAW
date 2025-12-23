@@ -126,10 +126,13 @@
 **경로:** [Source/GUI/VST3Window/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/VSTWindows.h)  
 💡 기능: VST3 플러그인 로딩 및 에디터 창 관리
  
+---
 
 ## 4. 기술스택
 - JUCE(C++) 오디오 프레임워크
 - Rust
+
+---
 
 ## 5. 참고사항(설치및 사용방법으로)
 ### 🧰 사전 준비 (Windows)
