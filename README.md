@@ -87,7 +87,7 @@
 
 ## 3. 주요 스크립트
 ### 🎧 실시간 오디오 출력 (JUCE AudioCallback)
-**경로:** `[Source/AudioHostController/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioHostController.h)`  
+**경로:** [Source/AudioHostController/](https://github.com/damien-cpp-rt/Ryuichi_DAW/blob/master/Source/AudioHostController.h)  
 💡 기능: 오디오 디바이스 콜백에서 출력 버퍼를 실시간으로 채움  
 📌 포인트:
 - 실시간 구간(락/할당/IO 금지)
