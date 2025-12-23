@@ -1,9 +1,11 @@
-<p align="center">
+<h1 align="center">
   <a href="https://www.youtube.com/watch?v=Q7ig6vn-y4M">
-    <img src="UI_Image/64px-YouTube_full-color_icon_(2017).svg.png" alt="유튜브" width="64"/>
+    <img src="UI_Image/64px-YouTube_full-color_icon_(2017).svg.png" alt="유튜브" width="40" style="vertical-align: middle;"/>
   </a>
-</p>
-<h1 align="center">Ryuichi DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)</h1>
+  <span style="vertical-align: middle;">
+    Ryuichi DAW(샘플 작곡 소프트웨어) — JUCE × Rust (FFI)
+  </span>
+</h1>
 
 <p align="center">
   <em>JUCE 기반 C++ UI + Rust 오디오 엔진(DLL) — 디코딩 · VST3 · 믹싱 · 출력(JUCE)</em><br/>
