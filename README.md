@@ -17,6 +17,7 @@
   <a href="https://juce.com/"><img alt="JUCE" src="https://img.shields.io/badge/JUCE-C%2B%2B-8A2BE2" /></a>
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20x64-black" />
   <img alt="Audio" src="https://img.shields.io/badge/Audio-48kHz%20stereo-1abc9c" />
+  <img src="UI_Image/DAW.png" alt="PlayingImg" width="900"/>
 </p>
 
 <hr/>
