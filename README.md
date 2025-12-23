@@ -138,8 +138,11 @@
 ---
 
 ## 4. 기술스택
-- JUCE(C++) 오디오 프레임워크
-- Rust
+- C++ / JUCE (UI, AudioCallback, VST3 Host)
+- Rust (DLL Audio Engine)
+- Symphonia (디코딩)
+- rtrb (Lock-free ring buffer)
+- Visual Studio 2022 / Projucer / Cargo
 
 ---
 
