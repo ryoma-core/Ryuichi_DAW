@@ -1,0 +1,27 @@
+pub mod unit;
+pub use unit::*;
+mod sound_track_update;
+pub use sound_track_update::*;
+mod sound_play;
+use crossbeam_utils::atomic::AtomicCell;
+pub use sound_play::*;
+use std::collections::BTreeMap;
+use std::os::raw::c_char;
+use std::sync::Condvar;
+
+fn bump_priority_worker_thread() {
+    unsafe {
+        let h = GetCurrentThread(); //Windows API 핸들 얻기
+        let _ = SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); //우선순위 올리기
+    }
+}
+
+fn pin_to_core(core_id: usize) {
+    if let Some(core) = core_affinity::get_core_ids().and_then(|v| v.get(core_id).cloned())
+    //코어 ID 유효성 검사
+    {
+        let _ = core_affinity::set_for_current(core); //현재 스레드를 해당 코어에 고정
+    }
+}
+
+// 나머지 코드는 상단 제한으로 인해 생략되었습니다.
